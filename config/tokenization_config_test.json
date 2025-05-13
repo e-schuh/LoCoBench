@@ -1,0 +1,7 @@
+{
+    "dataset_path": "/Users/eliasschuhmacher/Projects/LoCoBench/data/wikipedia_articles_en/extract_wiki.jsonl",
+    "dataset_format": "jsonl",
+    "model_name": "Alibaba-NLP/gte-multilingual-base",
+    "id_column": "id",
+    "text_column": "text"
+}

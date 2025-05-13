@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "locobench"
+version = "0.1.0"
+description = "A workbench and Benchmarking framework for Long-Context text embedding models and their positional biases"
+authors = ["Elias Schuhmacher <eliassebastian.schuhmacher@uzh.ch>"]
+readme = "README.md"
+packages = [{include = "locobench", from = "src"}]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+torch = ">=2.0.0"
+transformers = ">=4.30.0"
+polars = ">=0.20.0"
+matplotlib = ">=3.7.0"
+scikit-learn = ">=1.2.0"
+numpy = ">=1.24.0"
+ipykernel = "^6.29.5"
+datasets = "^3.5.1"
+einops = "^0.8.1"
+
+[tool.poetry.scripts]
+# run-embedding-experiment = "locobench.scripts.run_experiment:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
