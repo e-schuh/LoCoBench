@@ -171,6 +171,47 @@ class DocumentHandler:
 
         return tokenized_dataset
 
+    def tokenize_loaded_dataset(
+        self, dataset: Dataset, id_col: str = "id", text_col: str = "text"
+    ) -> Dataset:
+        """
+        Tokenize an already loaded Hugging Face dataset.
+
+        This method is optimized for pre-loaded datasets (e.g., in arrow format) and
+        directly tokenizes them without intermediate conversion to dictionaries.
+
+        Args:
+            dataset: A loaded Hugging Face Dataset with text content
+            id_col: Name of the column containing document IDs. Defaults to 'id'.
+            text_col: Name of the column containing document text. Defaults to 'text'.
+
+        Returns:
+            A Hugging Face Dataset containing the tokenized documents
+        """
+        # Rename columns if necessary to standardize
+        if id_col != "id" or text_col != "text":
+            dataset = dataset.rename_column(id_col, "id")
+            dataset = dataset.rename_column(text_col, "text")
+
+        # Define tokenization function
+        def tokenize_function(examples):
+            tokenized = self.tokenizer(
+                examples["text"],
+                padding=False,
+                truncation=True,
+                add_special_tokens=True,
+                return_length=True,
+            )
+            return tokenized
+
+        # Apply tokenization in parallel
+        tokenized_dataset = dataset.map(tokenize_function, batched=True)
+
+        # Set format for PyTorch
+        tokenized_dataset.set_format(type="torch")
+
+        return tokenized_dataset
+
     def get_dataloader(
         self, dataset: Dataset, batch_size: int = 32, shuffle: bool = False
     ) -> DataLoader:

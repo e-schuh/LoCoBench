@@ -1,7 +1,7 @@
 {
     "model_name": "Alibaba-NLP/gte-multilingual-base",
-    "tokenized_dataset_path": "/Users/eliasschuhmacher/Projects/LoCoBench/data/wikipedia_articles_en/tokenized__Alibaba-NLP_gte-multilingual-base",
-    "metadata_path": "/Users/eliasschuhmacher/Projects/LoCoBench/data/wikipedia_articles_en/tokenized__Alibaba-NLP_gte-multilingual-base/metadata.json",
+    "tokenized_dataset_path": "/Users/eliasschuhmacher/Projects/LoCoBench/data/combined_en_wikipedia/tokenized__Alibaba-NLP_gte-multilingual-base",
+    "metadata_path": "/Users/eliasschuhmacher/Projects/LoCoBench/data/combined_en_wikipedia/tokenized__Alibaba-NLP_gte-multilingual-base/metadata.json",
     "concatenation_strategy": "switch",
     "concat_size": 3,
     "sample_size": 4,

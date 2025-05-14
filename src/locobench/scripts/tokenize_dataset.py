@@ -2,11 +2,11 @@
 """
 Tokenization Script for LoCoBench
 
-This script tokenizes documents from various sources (jsonl, csv, txt)
+This script tokenizes documents from various sources (jsonl, csv, txt, arrow)
 and saves the tokenized dataset and metadata for later use.
 
 Usage:
-    python tokenize.py --config PATH_TO_CONFIG_FILE
+    python tokenize_dataset.py --config PATH_TO_CONFIG_FILE
 """
 
 import os
@@ -22,6 +22,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from locobench.core.document_handler import DocumentHandler
+from datasets import load_from_disk
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -74,8 +75,16 @@ def tokenize_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
 
     if not output_path:
         # Create output path based on dataset path
-        dataset_dir = os.path.dirname(dataset_path)
-        output_path = os.path.join(dataset_dir, f"tokenized__{model_name_dir_friendly}")
+        dataset_path_obj = Path(dataset_path)
+        if dataset_path_obj.is_dir():
+            output_path = os.path.join(
+                dataset_path, f"tokenized__{model_name_dir_friendly}"
+            )
+        else:
+            dataset_dir = os.path.dirname(dataset_path)
+            output_path = os.path.join(
+                dataset_dir, f"tokenized__{model_name_dir_friendly}"
+            )
 
     # Ensure the output directory exists
     os.makedirs(output_path, exist_ok=True)
@@ -83,33 +92,47 @@ def tokenize_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
     # Initialize document handler with the specified model
     document_handler = DocumentHandler(tokenizer_name=model_name)
 
-    # Load documents based on the format
+    # Process according to dataset format
     print(f"Loading documents from {dataset_path} with format {dataset_format}...")
 
-    if dataset_format == "jsonl":
+    if dataset_format == "arrow":
+        # Load dataset from disk in arrow format
+        print(f"Loading Hugging Face dataset from {dataset_path}...")
+        dataset = load_from_disk(dataset_path)
         id_col = config.get("id_column", "id")
         text_col = config.get("text_column", "text")
-        documents = document_handler.load_from_json_lines(
-            filepath=dataset_path, id_col=id_col, text_col=text_col
+
+        # Directly tokenize the loaded dataset
+        print("Tokenizing arrow dataset...")
+        tokenized_dataset = document_handler.tokenize_loaded_dataset(
+            dataset=dataset, id_col=id_col, text_col=text_col
         )
-    elif dataset_format == "csv":
-        id_col = config.get("id_column", "id")
-        text_col = config.get("text_column", "text")
-        documents = document_handler.load_from_csv(
-            filepath=dataset_path, id_col=id_col, text_col=text_col
-        )
-    elif dataset_format == "txt":
-        # Assuming the path is a directory containing text files
-        documents = document_handler.load_from_text_files(directory=dataset_path)
     else:
-        raise ValueError(f"Unsupported dataset format: {dataset_format}")
+        # Load documents based on the format
+        if dataset_format == "jsonl":
+            id_col = config.get("id_column", "id")
+            text_col = config.get("text_column", "text")
+            documents = document_handler.load_from_json_lines(
+                filepath=dataset_path, id_col=id_col, text_col=text_col
+            )
+        elif dataset_format == "csv":
+            id_col = config.get("id_column", "id")
+            text_col = config.get("text_column", "text")
+            documents = document_handler.load_from_csv(
+                filepath=dataset_path, id_col=id_col, text_col=text_col
+            )
+        elif dataset_format == "txt":
+            # Assuming the path is a directory containing text files
+            documents = document_handler.load_from_text_files(directory=dataset_path)
+        else:
+            raise ValueError(f"Unsupported dataset format: {dataset_format}")
 
-    # Print information about loaded documents
-    print(f"Loaded {len(documents)} documents")
+        # Print information about loaded documents
+        print(f"Loaded {len(documents)} documents")
 
-    # Create tokenized dataset
-    print("Tokenizing documents...")
-    tokenized_dataset = document_handler.create_tokenized_dataset(documents)
+        # Create tokenized dataset
+        print("Tokenizing documents...")
+        tokenized_dataset = document_handler.create_tokenized_dataset(documents)
 
     # Save tokenized dataset
     print(f"Saving tokenized dataset to {output_path}...")
