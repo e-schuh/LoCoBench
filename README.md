@@ -27,7 +27,26 @@ poetry run python src/locobench/scripts/tokenize_dataset.py --config config/toke
 poetry run python src/locobench/scripts/compute_embeddings.py --config config/embedding_config_test.json
 ```
 
+### Reproducing Embedding Experiments
 
-##  Adding New Models / Tokenizers
+To ensure exact replication of experiments with the same document indices, you can use the `reference_config_path` parameter in your embedding configuration file. This allows you to reuse the exact same concatenation and standalone indices from a previous run:
+
+```json
+{
+  "model_name": "your-model/name",
+  "tokenized_dataset_path": "path/to/tokenized/dataset",
+  "metadata_path": "path/to/metadata.json",
+  "concatenation_strategy": "switch",
+  "concat_size": 3,
+  "sample_size": 500,
+  // ... other parameters ...
+  "reference_config_path": "results/runs/Previous_Run_Name/embedding_config.json"
+}
+```
+
+When this parameter is specified, the script will load the `concat_indices` and `standalone_indices` from the reference config file rather than generating new ones. This ensures identical document selection across different runs.
+
+
+##  Adding New Models / Tokenizers
 
 Ensure that in the file `custom_data_collator.py`, the `CustomDataCollator` class is updated to include any special tokens different from "input_ids", "attention_mask", and "token_type_ids".

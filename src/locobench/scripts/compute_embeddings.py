@@ -133,11 +133,24 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
     print(f"Loading tokenized dataset from {tokenized_dataset_path}...")
     tokenized_dataset = load_from_disk(tokenized_dataset_path)
 
-    # Generate concatenation indices
-    print("Generating concatenation indices...")
-    concat_indices, standalone_indices = create_concatenation_indices(
-        metadata_path=metadata_path, **concat_params
-    )
+    # Check if reference config is provided for indices
+    if "reference_config_path" in config:
+        print(
+            f"Loading indices from reference config: {config['reference_config_path']}"
+        )
+        reference_config = load_config(config["reference_config_path"])
+        # Load indices from the reference config
+        concat_indices = reference_config.get("concat_indices", [])
+        standalone_indices = reference_config.get("standalone_indices", [])
+        print(
+            f"Loaded {len(concat_indices)} concat indices and {len(standalone_indices)} standalone indices"
+        )
+    else:
+        # Generate concatenation indices as before
+        print("Generating new concatenation indices...")
+        concat_indices, standalone_indices = create_concatenation_indices(
+            metadata_path=metadata_path, **concat_params
+        )
 
     # Save the indices to configuration
     config["concat_indices"] = concat_indices
