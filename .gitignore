@@ -177,3 +177,5 @@ cython_debug/
 results/
 data/
 notebooks/
+config/Alibaba_mGTE/
+config/JinaAi_jina-v3/
