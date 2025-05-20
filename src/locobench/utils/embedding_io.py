@@ -244,7 +244,7 @@ def load_latechunking_embeddings(
     Args:
         directory: Directory containing embeddings
         model_name: Name of model (if None, will attempt to infer from filenames)
-        embedding_type: Type of late-chunking embedding (e.g., 'segments', 'cls')
+        embedding_type: Type of late-chunking embedding (e.g., 'segments', 'cls', 'mean')
         device: Device to load tensors to
 
     Returns:
@@ -263,6 +263,8 @@ def load_latechunking_embeddings(
                 config_key = "latechunking_segments"
             elif embedding_type == "cls":
                 config_key = "latechunking_cls"
+            elif embedding_type == "mean":
+                config_key = "latechunking_mean"
 
             if config_key and config_key in config["embedding_paths"]:
                 embedding_path = config["embedding_paths"][config_key]
@@ -284,6 +286,8 @@ def load_latechunking_embeddings(
         ]
     elif embedding_type == "cls":
         patterns = ["latechunking__cls", "latechunking_cls", "cls_latechunking"]
+    elif embedding_type == "mean":
+        patterns = ["latechunking__mean", "latechunking_mean", "mean_latechunking"]
     else:
         patterns = ["latechunking__", "latechunking_"]
 

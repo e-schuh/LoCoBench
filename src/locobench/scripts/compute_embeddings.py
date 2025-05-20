@@ -242,12 +242,19 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
         embedding_type="cls",
     )
 
+    mean_latechunk_path = save_latechunking_embeddings(
+        embeddings=latechunk_embeddings["mean"],
+        output_dir=run_dir,
+        embedding_type="mean",
+    )
+
     # Update config with output paths
     config["embedding_paths"] = {
         "standalone_mean": mean_standalone_path,
         "standalone_cls": cls_standalone_path,
         "latechunking_segments": segments_latechunk_path,
         "latechunking_cls": cls_latechunk_path,
+        "latechunking_mean": mean_latechunk_path,
     }
     config["run_dir"] = run_dir
 

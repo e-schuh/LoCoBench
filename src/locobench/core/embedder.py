@@ -262,6 +262,7 @@ class LateChunkingEmbedder(BaseEmbedder):
 
     For each batch item, there is:
     - One CLS embedding (from the first token of the sequence)
+    - One MEAN embedding (mean pooled from the entire sequence)
     - Multiple segment embeddings (one per text segment using mean pooling)
     """
 
@@ -278,7 +279,7 @@ class LateChunkingEmbedder(BaseEmbedder):
         Args:
             model_name: Name or path of the HuggingFace model to use for embedding
             device: Device to run the model on ('cpu', 'cuda', 'mps').
-                   If None, will use CUDA if available, else CPU.
+                   If None, will use CUDA or MPS if available, else CPU.
             normalize: Whether to normalize the embeddings to unit length (L2 norm)
             jina_v3_task: Task type for Jina v3 embeddings model
         """
@@ -301,6 +302,7 @@ class LateChunkingEmbedder(BaseEmbedder):
         Returns:
             Dictionary mapping batch indices to sub-dictionaries containing:
             - One CLS embedding for the entire sequence
+            - One MEAN embedding for the entire sequence
             - Multiple segment embeddings (one per document) using mean pooling
         """
         # Get model outputs
@@ -320,6 +322,16 @@ class LateChunkingEmbedder(BaseEmbedder):
             cls_embedding = last_hidden_state[i, 0]
             if self.normalize:
                 cls_embedding = F.normalize(cls_embedding, p=2, dim=0)
+
+            # Get the MEAN pooled embedding for the entire sequence
+            attention_mask_for_item = (
+                batch["attention_mask"][i].unsqueeze(0).to(self.device)
+            )
+            mean_embedding = self.mean_pooling(
+                last_hidden_state[i].unsqueeze(0), attention_mask_for_item
+            ).squeeze(0)
+            if self.normalize:
+                mean_embedding = F.normalize(mean_embedding, p=2, dim=0)
 
             # Create embeddings for each segment using document boundaries
             segment_embeddings = {}
@@ -350,6 +362,7 @@ class LateChunkingEmbedder(BaseEmbedder):
 
             batch_results[context_id] = {
                 "cls": cls_embedding.cpu(),
+                "mean": mean_embedding.cpu(),
                 "segment_embeddings": segment_embeddings,
             }
 
@@ -366,8 +379,9 @@ class LateChunkingEmbedder(BaseEmbedder):
             Dictionary mapping:
             - Document IDs to their mean pooled segment embeddings
             - Special CLS keys to the CLS embeddings for each sequence
+            - Special MEAN keys to the MEAN embeddings for each sequence
         """
-        all_embeddings = {"cls": {}, "segment_embeddings": {}}
+        all_embeddings = {"cls": {}, "mean": {}, "segment_embeddings": {}}
 
         # Process each batch in the dataloader
         for batch in tqdm.tqdm(dataloader, desc="Embedding documents (late chunking)"):
@@ -377,6 +391,8 @@ class LateChunkingEmbedder(BaseEmbedder):
             for context_id, batch_embeddings in batch_results.items():
                 # Store the CLS embedding for this context
                 all_embeddings["cls"][context_id] = batch_embeddings["cls"]
+                # Store the MEAN embedding for this context
+                all_embeddings["mean"][context_id] = batch_embeddings["mean"]
                 # Store the segment embeddings for this context
                 all_embeddings["segment_embeddings"].update(
                     batch_embeddings["segment_embeddings"]
