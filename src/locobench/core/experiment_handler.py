@@ -10,6 +10,8 @@ from typing import List, Dict, Any, Tuple
 import random
 import json
 from pathlib import Path
+import itertools
+import math
 
 
 def create_concatenation_indices(
@@ -31,7 +33,7 @@ def create_concatenation_indices(
     Args:
         metadata_path: Path to the metadata JSON file containing document information
         concatenation_strategy: Strategy for selecting documents to concatenate.
-            Supports 'random' and 'switch' strategies.
+            Supports 'random', 'switch', and 'permutations' strategies.
         concat_size: Number of documents to concatenate for each new sample
         sample_size: Number of concatenated samples to create
         max_total_length: Maximum total token length for all concatenated documents combined.
@@ -55,10 +57,10 @@ def create_concatenation_indices(
                   if there are not enough documents for the requested concat_size,
                   or if position_specific_ranges length doesn't match concat_size.
     """
-    if concatenation_strategy not in ["random", "switch"]:
+    if concatenation_strategy not in ["random", "switch", "permutations"]:
         raise ValueError(
             f"Unsupported concatenation strategy: {concatenation_strategy}. "
-            f"Supported strategies are: 'random', 'switch'"
+            f"Supported strategies are: 'random', 'switch', 'permutations'"
         )
 
     if concat_size < 2:
@@ -83,6 +85,19 @@ def create_concatenation_indices(
         print(
             f"Adjusted sample_size to {sample_size} to ensure even number for 'switch' strategy"
         )
+
+    # For the permutations strategy, adjust sample_size to be a multiple of factorial(concat_size)
+    if concatenation_strategy == "permutations":
+        # Calculate factorial
+        factorial_size = math.factorial(concat_size)
+
+        if sample_size % factorial_size != 0:
+            original_sample_size = sample_size
+            sample_size = ((sample_size // factorial_size) + 1) * factorial_size
+            print(
+                f"Adjusted sample_size from {original_sample_size} to {sample_size} to ensure it's a multiple of "
+                f"{factorial_size} (factorial of concat_size {concat_size}) for 'permutations' strategy"
+            )
 
     # Load metadata
     with open(Path(metadata_path), "r", encoding="utf-8") as f:
@@ -247,6 +262,53 @@ def create_concatenation_indices(
         if samples_created < base_sample_count:
             print(
                 f"Warning: Could only generate {samples_created * 2} unique samples "
+                f"(instead of requested {sample_size}) before reaching max attempts."
+            )
+
+    elif concatenation_strategy == "permutations":
+        # For permutations strategy, we create base samples and then generate all permutations
+        base_sample_count = sample_size // math.factorial(concat_size)
+
+        # Use a set to track combinations we've already added
+        added_base_combinations = set()
+
+        samples_created = 0
+        max_attempts = base_sample_count * 10  # Limit attempts to avoid infinite loops
+        attempts = 0
+
+        while samples_created < base_sample_count and attempts < max_attempts:
+            attempts += 1
+
+            # Select documents for each position
+            selected_indices = []
+            for pool in document_pools:
+                selected_idx = random.choice(pool)
+                selected_indices.append(selected_idx)
+
+            # Check total length constraint if specified
+            if max_total_length is not None:
+                total_length = sum(doc_lengths[idx] for idx in selected_indices)
+                if total_length > max_total_length:
+                    continue  # Skip this combination as it exceeds max length
+
+            # Sort the indices to create a canonical representation for the set of documents
+            # This ensures we don't generate permutations for the same set of documents
+            canonical_tuple = tuple(sorted(selected_indices))
+
+            # Only add if we haven't already created permutations for this set of documents
+            if canonical_tuple not in added_base_combinations:
+                # Generate all permutations
+                for permutation in itertools.permutations(selected_indices):
+                    concatenation_indices.append(list(permutation))
+
+                # Track that we've used this set of documents
+                added_base_combinations.add(canonical_tuple)
+                used_indices.update(selected_indices)
+                samples_created += 1
+
+        if samples_created < base_sample_count:
+            print(
+                f"Warning: Could only generate {samples_created * math.factorial(concat_size)} unique samples "
                 f"(instead of requested {sample_size}) before reaching max attempts."
             )
 
