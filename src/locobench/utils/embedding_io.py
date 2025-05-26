@@ -92,7 +92,7 @@ def load_embeddings(
         for key in keys:
             embeddings[key] = data["tensors"][key]
 
-    print(f"Loaded {len(embeddings)} embeddings from {tensor_path}")
+    # print(f"Loaded {len(embeddings)} embeddings from {tensor_path}")
     return embeddings
 
 
@@ -160,7 +160,6 @@ def save_latechunking_embeddings(
 
 def load_standalone_embeddings(
     directory: str,
-    model_name: Optional[str] = None,
     pooling_strategy: Optional[str] = None,
     device: Optional[str] = None,
 ) -> Dict[str, torch.Tensor]:
@@ -174,7 +173,13 @@ def load_standalone_embeddings(
         device: Device to load tensors to
 
     Returns:
-        Dictionary mapping IDs to embeddings (PyTorch tensors)
+        Dictionary mapping IDs to embeddings (PyTorch tensors).
+        Format:
+        {
+            'segmentID1': tensor1,
+            '3461318': tensor2,
+            ...
+        }
     """
     # First, check if there's an embedding_config.json file that defines the paths
     config_path = os.path.join(directory, "embedding_config.json")
@@ -248,7 +253,20 @@ def load_latechunking_embeddings(
         device: Device to load tensors to
 
     Returns:
-        Dictionary mapping IDs to embeddings (PyTorch tensors)
+        Dictionary mapping IDs to embeddings (PyTorch tensors).
+        Format for segments:
+        {
+            'segmentID1__pos0__seq_segmentID1_segmentID2_segmentID3': tensor1,
+            '3539177__pos0__seq_3539177_124217_233347': tensor2,
+            ...
+        }
+
+        Format for CLS & MEAN:
+        {
+            'seq_segmentID1_segmentID2_segmentID3': tensor1,
+            'seq_3539177_124217_233347': tensor2,
+            ...
+        }
     """
     # First, check if there's an embedding_config.json file that defines the paths
     config_path = os.path.join(directory, "embedding_config.json")

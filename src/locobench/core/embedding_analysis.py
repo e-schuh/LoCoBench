@@ -343,6 +343,7 @@ def eval_switch_exp(
             continue
 
     # Save results to a file if output_dir is provided
+    filepath = None
     if output_dir is not None:
         # Create directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
