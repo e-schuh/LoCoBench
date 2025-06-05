@@ -282,10 +282,23 @@ class PositionSimilaritySinglePlotter:
         # Add segment length as subtitle instead of text in the plot
         if show_title:
             current_title = ax.get_title()
+
+            # Get language information if available
+            source_lang = results.get("source_lang")
+            target_lang = results.get("target_lang")
+
+            title_text = f"Segment Length: {range_id}"
+
+            # Add language information if available
+            if target_lang and source_lang:
+                title_text += f"; Lang:: first: {target_lang}, remaining: {source_lang}"
+            elif source_lang:
+                title_text += f"; Lang:: {source_lang}"
+
             if current_title:
-                ax.set_title(f"{current_title}\nSegment Length: {range_id}", fontsize=9)
+                ax.set_title(f"{current_title}\n{title_text}", fontsize=9)
             else:
-                ax.set_title(f"Segment Length: {range_id}", fontsize=9)
+                ax.set_title(title_text, fontsize=9)
 
         # Set x-axis ticks to be integers
         ax.set_xticks(positions)
@@ -556,8 +569,22 @@ class DirectionalLeakageSinglePlotter:
 
             # Always add segment length as a subtitle
             if compact:
-                # For multi-plot displays, just show the segment length
-                ax.set_title(f"Segment Length: {range_id}", fontsize=9)
+                # For multi-plot displays, show the segment length and language info if available
+                # Get language information if available
+                source_lang = results.get("source_lang")
+                target_lang = results.get("target_lang")
+
+                title_text = f"Segment Length: {range_id}"
+
+                # Add language information if available
+                if target_lang and source_lang:
+                    title_text += (
+                        f"; Lang:: first: {target_lang}, remaining: {source_lang}"
+                    )
+                elif source_lang:
+                    title_text += f"; Lang:: {source_lang}"
+
+                ax.set_title(title_text, fontsize=9)
             else:
                 # For single plots, show more detailed information
                 size_info = str(results["concat_size"])
@@ -568,8 +595,24 @@ class DirectionalLeakageSinglePlotter:
                         ranges.append(f"{start}-{end}")
                 ranges_str = " | ".join(ranges) if ranges else "N/A"
 
+                # Get language information if available
+                source_lang = results.get("source_lang")
+                target_lang = results.get("target_lang")
+
+                title_text = (
+                    f"{model_name} (size {size_info})\nSegment Length: {range_id}"
+                )
+
+                # Add language information if available
+                if target_lang and source_lang:
+                    title_text += (
+                        f"; Lang:: first: {target_lang}, remaining: {source_lang}"
+                    )
+                elif source_lang:
+                    title_text += f"; Lang:: {source_lang}"
+
                 ax.set_title(
-                    f"{model_name} (size {size_info})\nSegment Length: {range_id}",
+                    title_text,
                     fontsize=9 if compact else 12,
                 )
 

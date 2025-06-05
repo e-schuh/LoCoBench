@@ -20,6 +20,8 @@ def create_concatenation_indices(
     concat_size: int = 2,
     sample_size: int = 100,
     max_total_length: int = None,
+    source_lang: str = None,
+    target_lang: str = None,
     individual_length_range: Tuple[int, int] = None,
     position_specific_ranges: List[Tuple[int, int]] = None,
 ) -> Tuple[List[List[int]], List[int]]:
@@ -105,11 +107,37 @@ def create_concatenation_indices(
 
     # Extract dataset indices from metadata
     dataset_indices = []
+    dataset_indices_source = []
+    dataset_indices_target = []
     doc_lengths = {}  # Store document lengths for filtering
+    doc_langs = {}  # Store document languages if needed
+    doc_pair_id = {}  # Store document pair IDs if needed
     for doc_id, doc_info in metadata.items():
         idx = doc_info["dataset_idx"]
+        if source_lang:
+            if doc_info["language"] == source_lang:
+                dataset_indices_source.append(idx)
+        if target_lang:
+            if doc_info["language"] == target_lang:
+                dataset_indices_target.append(idx)
         dataset_indices.append(idx)
         doc_lengths[idx] = doc_info["token_length"]
+        doc_langs[idx] = doc_info["language"]
+        if target_lang and doc_info["pair_id"] != "_NA":
+            doc_pair_id[idx] = doc_info["pair_id"]
+
+    print(f"Total documents in dataset: {len(dataset_indices)}")
+    print(
+        f"Documents in source language '{source_lang}': {len(dataset_indices_source)}"
+    )
+    print(
+        f"Documents in target language '{target_lang}': {len(dataset_indices_target)}"
+    )
+    print(f"Document Pair IDs available: {len(doc_pair_id)}")
+
+    if not source_lang:
+        dataset_indices_source = [idx for idx in dataset_indices]
+        print("No source language specified, using all documents as source language.")
 
     # Check if we have enough documents
     dataset_size = len(dataset_indices)
@@ -127,7 +155,7 @@ def create_concatenation_indices(
         for i, (min_length, max_length) in enumerate(position_specific_ranges):
             position_pool = [
                 idx
-                for idx in dataset_indices
+                for idx in dataset_indices_source
                 if min_length <= doc_lengths[idx] <= max_length
             ]
 
@@ -146,25 +174,27 @@ def create_concatenation_indices(
             document_pools.append(position_pool)
     else:
         # Filter all documents based on common individual length range if specified
-        filtered_indices = dataset_indices
         if individual_length_range is not None:
             min_length, max_length = individual_length_range
-            filtered_indices = [
+            pool = [
                 idx
-                for idx in dataset_indices
+                for idx in dataset_indices_source
                 if min_length <= doc_lengths[idx] <= max_length
             ]
 
-            if len(filtered_indices) < concat_size:
+            if len(pool) < concat_size:
                 raise ValueError(
                     f"After filtering by length range {individual_length_range}, "
-                    f"only {len(filtered_indices)} documents remain, but {concat_size} "
+                    f"only {len(pool)} documents remain, but {concat_size} "
                     f"are required for concatenation"
                 )
+        else:
+            pool = [idx for idx in dataset_indices_source]
 
         # Use the same pool for all positions when not using position-specific ranges
         for _ in range(concat_size):
-            document_pools.append(filtered_indices)
+            # Append the same pool for each position
+            document_pools.append(pool)
 
     concatenation_indices = []
     used_indices = set()  # To track all unique indices used
@@ -281,9 +311,38 @@ def create_concatenation_indices(
 
             # Select documents for each position
             selected_indices = []
+            selected_indices_not_valid = False
             for pool in document_pools:
-                selected_idx = random.choice(pool)
-                selected_indices.append(selected_idx)
+                if doc_pair_id:
+                    attempts_for_pair = 0
+                    while True:
+                        selected_idx_source = random.choice(pool)
+                        matched_idx_target = doc_pair_id[selected_idx_source]
+                        source_length = doc_lengths[selected_idx_source]
+                        target_length = doc_lengths[matched_idx_target]
+
+                        # check if lengths are within 15% of each other
+                        if abs(source_length - target_length) <= 0.15 * max(
+                            source_length, target_length
+                        ):
+                            selected_indices.append(selected_idx_source)
+                            break
+                        attempts_for_pair += 1
+                        if attempts_for_pair > 1000:
+                            print(
+                                f"Warning: Could not find a valid pair after 1000 attempts."
+                            )
+                            selected_indices_not_valid = True
+                            break
+                    if selected_indices_not_valid:
+                        break
+
+                else:
+                    selected_idx = random.choice(pool)
+                    selected_indices.append(selected_idx)
+
+            if selected_indices_not_valid:
+                continue
 
             # Check total length constraint if specified
             if max_total_length is not None:
@@ -299,7 +358,12 @@ def create_concatenation_indices(
             if canonical_tuple not in added_base_combinations:
                 # Generate all permutations
                 for permutation in itertools.permutations(selected_indices):
-                    concatenation_indices.append(list(permutation))
+                    permutation_list = list(permutation)
+                    if doc_pair_id:
+                        # Replace the first index in list with its pair ID
+                        permutation_list[0] = doc_pair_id[permutation_list[0]]
+                        used_indices.add(permutation_list[0])
+                    concatenation_indices.append(permutation_list)
 
                 # Track that we've used this set of documents
                 added_base_combinations.add(canonical_tuple)

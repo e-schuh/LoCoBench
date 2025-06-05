@@ -110,6 +110,8 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
         "concat_size": config["concat_size"],
         "sample_size": config["sample_size"],
         "max_total_length": config.get("max_total_length"),
+        "source_lang": config.get("source_lang", None),
+        "target_lang": config.get("target_lang", None),
     }
 
     # Add position-specific ranges if present

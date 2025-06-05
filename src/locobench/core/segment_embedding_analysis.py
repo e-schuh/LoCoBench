@@ -101,6 +101,11 @@ def load_and_process_embeddings(
         for k, v in doc_embeddings.items()
     }
 
+    # Convert all keys to strings for consistency
+    segID_to_emb = {str(k): v for k, v in segID_to_emb.items()}
+    latechunk_segments = {str(k): v for k, v in latechunk_segments.items()}
+    doc_embeddings = {str(k): v for k, v in doc_embeddings.items()}
+
     # Create mappings needed for our analysis
     docID_pos_to_segID = (
         {}
@@ -177,6 +182,8 @@ def load_exp_info(path: str | Path) -> Dict[str, Any]:
         - concatenation_strategy: Strategy used for concatenation (permutations, switch, etc.)
         - concat_size: Number of segments concatenated
         - position_specific_ranges: List of position-specific token ranges
+        - source_lang: Source language code (if available)
+        - target_lang: Target language code (if available)
     """
     path_str = str(path)
 
@@ -192,6 +199,8 @@ def load_exp_info(path: str | Path) -> Dict[str, Any]:
             "concatenation_strategy": config.get("concatenation_strategy", ""),
             "concat_size": config.get("concat_size", 0),
             "position_specific_ranges": config.get("position_specific_ranges", []),
+            "source_lang": config.get("source_lang", None),
+            "target_lang": config.get("target_lang", None),
         }
 
     # If no config exists, parse information from the directory name
@@ -458,6 +467,12 @@ class DocumentSegmentSimilarityAnalyzer:
         results["concat_size"] = exp_info["concat_size"]
         results["position_specific_ranges"] = exp_info["position_specific_ranges"]
 
+        # Add language information if available
+        if "source_lang" in exp_info and exp_info["source_lang"]:
+            results["source_lang"] = exp_info["source_lang"]
+        if "target_lang" in exp_info and exp_info["target_lang"]:
+            results["target_lang"] = exp_info["target_lang"]
+
         return results
 
 
@@ -581,6 +596,12 @@ class DirectionalLeakageAnalyzer:
         leakage_results["position_specific_ranges"] = exp_info.get(
             "position_specific_ranges", []
         )
+
+        # Add language information if available
+        if "source_lang" in exp_info and exp_info["source_lang"]:
+            leakage_results["source_lang"] = exp_info["source_lang"]
+        if "target_lang" in exp_info and exp_info["target_lang"]:
+            leakage_results["target_lang"] = exp_info["target_lang"]
 
         # Extract path name for display
         path_str = str(path)

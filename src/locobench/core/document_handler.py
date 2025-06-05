@@ -147,7 +147,7 @@ class DocumentHandler:
         # Convert list of dictionaries to a Hugging Face Dataset
         dataset = Dataset.from_dict(
             {
-                "id": [doc["id"] for doc in documents],
+                "id": [str(doc["id"]) for doc in documents],
                 "text": [doc["text"] for doc in documents],
             }
         )
@@ -167,7 +167,11 @@ class DocumentHandler:
         tokenized_dataset = dataset.map(tokenize_function, batched=True)
 
         # Set format for PyTorch
-        tokenized_dataset.set_format(type="torch")
+        tokenized_dataset.set_format(
+            type="torch",
+            columns=["input_ids", "attention_mask", "length"],
+            output_all_columns=True,
+        )
 
         return tokenized_dataset
 
@@ -208,7 +212,11 @@ class DocumentHandler:
         tokenized_dataset = dataset.map(tokenize_function, batched=True)
 
         # Set format for PyTorch
-        tokenized_dataset.set_format(type="torch")
+        tokenized_dataset.set_format(
+            type="torch",
+            columns=["input_ids", "attention_mask", "length"],
+            output_all_columns=True,
+        )
 
         return tokenized_dataset
 
@@ -271,7 +279,7 @@ class DocumentHandler:
             separator_ids = self.tokenizer.encode(separator, add_special_tokens=False)
 
         # Extract information from documents
-        doc_ids = [doc["id"] for doc in documents]
+        doc_ids = [str(doc["id"]) for doc in documents]
         doc_texts = [doc["text"] for doc in documents]
         input_ids_list = [doc["input_ids"] for doc in documents]
         lengths = [doc["length"] for doc in documents]
@@ -553,7 +561,7 @@ class DocumentHandler:
             tokenized_dataset: A Hugging Face Dataset containing tokenized documents
             directory_path: Path to directory where the metadata file will be stored
             languages_map: Optional mapping from document ID to language (defaults to "en")
-            topics_map: Optional mapping from document ID to topic (defaults to "na")
+            topics_map: Optional mapping from document ID to topic (defaults to "_NA")
             filename: Name of the metadata file to create (defaults to "metadata.json")
 
         Returns:
@@ -569,7 +577,7 @@ class DocumentHandler:
         # Create metadata dictionary
         metadata = {}
         for idx, doc in enumerate(tokenized_dataset):
-            doc_id = doc["id"]
+            doc_id = str(doc["id"])
             # Subtract 2 from length to exclude start and end tokens
             token_length = (
                 doc["length"].item() - 2
@@ -578,14 +586,18 @@ class DocumentHandler:
             )
 
             # Use provided mappings if available, otherwise use defaults
-            language = languages_map.get(doc_id, "en")
-            topic = topics_map.get(doc_id, "na")
+            language = doc.get("language", languages_map.get(doc_id, "en"))
+            topic = doc.get("topic", topics_map.get(doc_id, "_NA"))
+
+            # Extract pair_id if available
+            pair_id = doc.get("pair_id", "_NA")
 
             metadata[doc_id] = {
                 "dataset_idx": idx,
                 "token_length": token_length,
                 "language": language,
                 "topic": topic,
+                "pair_id": pair_id,
             }
 
         # Ensure the directory exists

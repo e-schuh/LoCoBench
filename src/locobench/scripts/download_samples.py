@@ -15,7 +15,9 @@ import sys
 import json
 import argparse
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
+from collections import defaultdict
+import datetime
 
 # Add project root to path to ensure imports work
 project_root = str(Path(__file__).parent.parent.parent.parent.absolute())
@@ -24,6 +26,7 @@ if project_root not in sys.path:
 
 from datasets import load_dataset
 from datasets import Dataset as RegularDataset
+from locobench.utils.wikipedia_id_translator import WikipediaCuridTranslator
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -53,6 +56,165 @@ def save_output_config(config: Dict[str, Any], output_path: str):
         json.dump(config, f, indent=2)
 
 
+def get_cohere_samples(
+    dataset_url: str,
+    num_samples: int,
+    split: str = "train",
+    source_lang: Optional[str] = None,  # eg "en"
+    target_lang: Optional[str] = None,  # eg "it"
+    source_batch_size: int = 10000,
+    max_indices_searched_target: int = 100000,
+) -> Tuple[RegularDataset, Dict[int, int]]:
+
+    if not source_lang:
+        raise ValueError("source_lang must be provided for Cohere dataset format")
+
+    if target_lang:
+        curid_translator = WikipediaCuridTranslator(source_lang, target_lang)
+        source_data = load_dataset(
+            dataset_url,
+            source_lang,
+            split=split,
+            streaming=True,
+            trust_remote_code=True,
+        )
+        target_data = load_dataset(
+            dataset_url,
+            target_lang,
+            split=split,
+            streaming=True,
+            trust_remote_code=True,
+        )
+        source_para0 = source_data.filter(lambda row: row["paragraph_id"] == 0)
+
+        source_para0 = source_para0.batch(batch_size=source_batch_size)
+        matches_source2target_ids = {}
+        print("Starting Source to Target ID search...")
+        source_max_index = 0
+        target_max_index = 0
+        for i, batch in enumerate(source_para0):
+            source_batch_no = i + 1
+            print(f"Processing source batch {source_batch_no}...")
+            source_wiki_ids = batch["wiki_id"]
+            source_wiki_ids = [int(id) for id in source_wiki_ids if id is not None]
+            source_max_index = max(
+                source_max_index, max([int(id) for id in batch["id"]])
+            )
+            source2target_ids = curid_translator.translate_ids(source_wiki_ids)
+            print("Source to Target IDs mapping completed.")
+            target2source_ids = {
+                int(v): int(k) for k, v in source2target_ids.items() if v is not None
+            }
+            target_para0 = target_data.filter(lambda row: (row["paragraph_id"] == 0))
+
+            indices_searched_target = 0
+            for sample in target_para0:
+                target_wiki_id = (
+                    int(sample["wiki_id"]) if sample["wiki_id"] is not None else None
+                )
+
+                if (
+                    target_wiki_id is None
+                    or target_wiki_id in matches_source2target_ids.values()
+                ):
+                    continue
+                indices_searched_target += 1
+
+                if target_wiki_id in target2source_ids:
+                    matches_source2target_ids[target2source_ids[target_wiki_id]] = (
+                        target_wiki_id
+                    )
+                    target_max_index = max(target_max_index, int(sample["id"]))
+                if (
+                    len(matches_source2target_ids) > num_samples
+                ):  # last sample is used later to stop loop and cannot be used
+                    break
+
+                if indices_searched_target >= max_indices_searched_target:
+                    sample_id = sample["id"]
+                    print(
+                        f"Reached max indices searched in target ({max_indices_searched_target}), stopping search for current source batch. Searched until id {sample_id}. Current size of matches: {len(matches_source2target_ids)}. Current datetime: {datetime.datetime.now()}"
+                    )
+                    break
+
+            if len(matches_source2target_ids) > num_samples:
+                assert len(matches_source2target_ids.keys()) == len(
+                    set(matches_source2target_ids.values())
+                )
+                break
+
+        print(f"Found {len(matches_source2target_ids)} matching source to target IDs.")
+        print("Collecting source paragraphs for matched IDs...")
+        source_wikiID2paras = defaultdict(list)
+        # source_matches = source_data.filter(
+        #     lambda row: row["wiki_id"] in matches_source2target_ids.keys()
+        # )
+        for i, sample in enumerate(source_data):
+            if i > source_max_index:
+                print(f"Reached the last source wiki ID: {source_max_index}, stopping.")
+                break
+            source_wiki_id = (
+                int(sample["wiki_id"]) if sample["wiki_id"] is not None else None
+            )
+            if source_wiki_id not in matches_source2target_ids.keys():
+                continue
+
+            para_id = sample["paragraph_id"]
+            text = sample["text"]
+            source_wikiID2paras[source_wiki_id].insert(para_id, text)
+
+        print("Source paragraphs collected.")
+
+        print("Collecting target paragraphs for matched IDs...")
+        target_wikiID2paras = defaultdict(list)
+        # target_matches = target_data.filter(
+        #     lambda row: row["wiki_id"] in matches_source2target_ids.values()
+        # )
+        for i, sample in enumerate(target_data):
+            if i > target_max_index:
+                print(f"Reached the last target wiki ID: {target_max_index}, stopping.")
+                break
+            target_wiki_id = (
+                int(sample["wiki_id"]) if sample["wiki_id"] is not None else None
+            )
+            if target_wiki_id not in matches_source2target_ids.values():
+                continue
+
+            para_id = sample["paragraph_id"]
+            text = sample["text"]
+            target_wikiID2paras[target_wiki_id].insert(para_id, text)
+
+        print("Target paragraphs collected.")
+
+        print("Concatenating paragraphs...")
+        source_wikiID2text = {
+            wiki_id: "\n".join(paras) for wiki_id, paras in source_wikiID2paras.items()
+        }
+        target_wikiID2text = {
+            wiki_id: "\n".join(paras) for wiki_id, paras in target_wikiID2paras.items()
+        }
+
+        print("Creating final dataset...")
+        final_dataset_dict = {"id": [], "text": [], "language": [], "pair_id": []}
+        for i, source_wikiID in zip(
+            range(0, 2 * len(matches_source2target_ids), 2),
+            matches_source2target_ids.keys(),
+        ):
+            target_wikiID = matches_source2target_ids[source_wikiID]
+            final_dataset_dict["id"].append(i)
+            final_dataset_dict["text"].append(source_wikiID2text[source_wikiID])
+            final_dataset_dict["language"].append(source_lang)
+            final_dataset_dict["pair_id"].append(i + 1)
+            final_dataset_dict["id"].append(i + 1)
+            final_dataset_dict["text"].append(target_wikiID2text[target_wikiID])
+            final_dataset_dict["language"].append(target_lang)
+            final_dataset_dict["pair_id"].append(i)
+
+        final_dataset = RegularDataset.from_dict(final_dataset_dict)
+
+        return final_dataset, matches_source2target_ids
+
+
 def download_dataset_samples(
     dataset_url: str,
     num_samples: int,
@@ -62,6 +224,9 @@ def download_dataset_samples(
     seed: Optional[int] = 42,
     buffer_size: Optional[int] = 500000,
     output_format: str = "jsonl",
+    dataset_format: Optional[str] = None,
+    source_lang: Optional[str] = None,
+    target_lang: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Download random samples from a Hugging Face dataset using streaming.
@@ -75,26 +240,37 @@ def download_dataset_samples(
         seed: Random seed for shuffling (default: 42)
         buffer_size: Size of shuffle buffer (default: 500000)
         output_format: Format to save samples in (default: "jsonl")
+        dataset_format: Format of the dataset (optional, options include "cohere")
 
     Returns:
         Updated configuration with output information
     """
-    print(f"Loading dataset {dataset_url} in streaming mode...")
+    if dataset_format and dataset_format.lower() == "cohere":
+        print("Cohere dataset format detected, using custom loading logic...")
+        samples, matches_source2target_ids = get_cohere_samples(
+            dataset_url, num_samples, split, source_lang, target_lang
+        )
 
-    # Load dataset in streaming mode
-    dataset = load_dataset(dataset_url, split=split, streaming=True)
+    else:
+        print(f"Loading dataset {dataset_url} in streaming mode...")
+        # Load dataset in streaming mode
+        dataset = load_dataset(
+            dataset_url, split=split, streaming=True, trust_remote_code=True
+        )
 
-    # Shuffle the dataset if requested
-    if shuffle:
-        print(f"Shuffling dataset with seed {seed} and buffer size {buffer_size}...")
-        dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size)
+        # Shuffle the dataset if requested
+        if shuffle:
+            print(
+                f"Shuffling dataset with seed {seed} and buffer size {buffer_size}..."
+            )
+            dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size)
+
+        # Prepare to extract samples
+        print(f"Generating {num_samples} samples from dataset...")
+        samples = dataset.take(num_samples)
 
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    # Prepare to extract samples
-    print(f"Generating {num_samples} samples from dataset...")
-    samples = dataset.take(num_samples)
 
     print(f"Downloading samples and saving to {output_path}...")
     # Save the samples based on the specified format
@@ -121,6 +297,9 @@ def download_dataset_samples(
         "shuffle": shuffle,
         "seed": seed,
         "output_format": output_format,
+        "dataset_format": dataset_format,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
     }
 
     print(f"Successfully saved {num_samples} samples to {output_path}")
@@ -167,6 +346,19 @@ def main():
         default="jsonl",
         help="Format to save samples in (default: jsonl)",
     )
+    parser.add_argument(
+        "--dataset_format",
+        choices=["cohere"],
+        help="Format of the dataset (optional, options include 'cohere')",
+    )
+    parser.add_argument(
+        "--source_lang",
+        help="Source language for Cohere dataset format (e.g., 'en')",
+    )
+    parser.add_argument(
+        "--target_lang",
+        help="Target language for Cohere dataset format (e.g., 'it')",
+    )
 
     args = parser.parse_args()
 
@@ -186,6 +378,9 @@ def main():
         seed = config.get("seed", 42)
         buffer_size = config.get("buffer_size", 500000)
         output_format = config.get("output_format", "jsonl")
+        dataset_format = config.get("dataset_format")
+        source_lang = config.get("source_lang")
+        target_lang = config.get("target_lang")
     else:
         # Ensure required parameters are provided when not using config
         if not args.num_samples:
@@ -202,6 +397,9 @@ def main():
         seed = args.seed
         buffer_size = args.buffer_size
         output_format = args.output_format
+        dataset_format = args.dataset_format
+        source_lang = args.source_lang
+        target_lang = args.target_lang
 
     # Download dataset samples
     result_config = download_dataset_samples(
@@ -213,6 +411,9 @@ def main():
         seed=seed,
         buffer_size=buffer_size,
         output_format=output_format,
+        dataset_format=dataset_format,
+        source_lang=source_lang,
+        target_lang=target_lang,
     )
 
     # Save output configuration - check if output_path is a directory
