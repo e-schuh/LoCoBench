@@ -323,6 +323,45 @@ def analyze_and_plot_multiple_results(
             key = (model_name, concat_size)
             max_variations_per_model_size[key] = len(size_results)
 
+    # Calculate global y-limits for each model (for position analysis only)
+    model_ylims = {}
+    if analysis_type == "position":
+        for model_name, results in model_groups.items():
+            all_values = []
+            for result in results:
+                # Collect all y-values (means, CI lower, CI upper)
+                all_values.extend(result["position_means"])
+                all_values.extend(result["position_ci_lower"])
+                all_values.extend(result["position_ci_upper"])
+
+            if all_values:
+                # Add a small margin (5%) to the range
+                y_min = min(all_values)
+                y_max = max(all_values)
+                y_range = y_max - y_min
+                margin = y_range * 0.05
+                model_ylims[model_name] = (y_min - margin, y_max + margin)
+            else:
+                model_ylims[model_name] = None
+
+    # Calculate global x-limits for each model (for directional leakage analysis only)
+    model_xlims = {}
+    if analysis_type == "directional_leakage":
+        for model_name, results in model_groups.items():
+            all_values = []
+            for result in results:
+                # Collect all x-values (forward and backward influence values)
+                all_values.extend(result["forward_influence"])
+                all_values.extend(result["backward_influence"])
+
+            if all_values:
+                # Add a small margin and respect cosine similarity bounds [-1, 1]
+                x_min = max(min(all_values) - 0.01, -1.0)
+                x_max = min(max(all_values) + 0.01, 1.0)
+                model_xlims[model_name] = (x_min, x_max)
+            else:
+                model_xlims[model_name] = None
+
     # Calculate total columns needed (sum of max variations per model + spacing)
     total_cols = 0
     model_col_start_indices = {}
@@ -370,7 +409,7 @@ def analyze_and_plot_multiple_results(
         total_cols_with_spacing,
         figure=fig,
         width_ratios=width_ratios,
-        wspace=0.25,  # More space between subplots horizontally
+        wspace=0.45,  # Increased horizontal space between subplots to prevent y-axis label overlap
         hspace=0.35,  # More space between rows
     )
 
@@ -424,7 +463,20 @@ def analyze_and_plot_multiple_results(
                     break
 
                 ax = fig.add_subplot(gs[row_idx, col_idx])
-                plot_in_subplot(ax, result, show_title=True, compact=True)
+
+                # Pass ylim for position analysis or xlim for directional leakage analysis
+                if analysis_type == "position":
+                    ylim = model_ylims.get(model_name)
+                    plot_in_subplot(
+                        ax, result, show_title=True, compact=True, ylim=ylim
+                    )
+                elif analysis_type == "directional_leakage":
+                    xlim = model_xlims.get(model_name)
+                    plot_in_subplot(
+                        ax, result, show_title=True, compact=True, xlim=xlim
+                    )
+                else:
+                    plot_in_subplot(ax, result, show_title=True, compact=True)
 
                 # Only draw concat_size label once per row, on the leftmost subplot
                 if (
@@ -433,7 +485,7 @@ def analyze_and_plot_multiple_results(
                     and local_col_idx == 0
                 ):
                     ax.text(
-                        -0.30,  # Position for label
+                        -0.50,  # Increased spacing for row labels to prevent overlap with first column
                         0.5,
                         f"# of Segments: {concat_size}",
                         verticalalignment="center",

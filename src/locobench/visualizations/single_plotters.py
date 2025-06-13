@@ -2,6 +2,7 @@ import os
 
 from typing import Dict, List, Tuple, Set, Any, Optional
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 from pathlib import Path
 
 # Import the required analyses functions
@@ -104,6 +105,9 @@ class PositionSimilaritySinglePlotter:
 
         # Set x-axis ticks to be integers
         ax.set_xticks(positions)
+
+        # Format y-axis to show at most 3 decimal places
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
 
         # Add grid for better readability
         ax.grid(True, linestyle="--", alpha=0.7)
@@ -224,6 +228,7 @@ class PositionSimilaritySinglePlotter:
         results: Dict[str, Any],
         show_title: bool = True,
         compact: bool = True,
+        ylim: Optional[Tuple[float, float]] = None,
     ) -> None:
         """
         Plot position-based similarity results in a given subplot.
@@ -233,6 +238,7 @@ class PositionSimilaritySinglePlotter:
             results: Dictionary returned from run_position_analysis()
             show_title: Whether to show the title (default: True)
             compact: Whether to use a compact plot style for multi-plot figures (default: True)
+            ylim: Optional tuple specifying (min, max) y-axis limits
         """
         # Extract data from results
         position_means = results["position_means"]
@@ -287,11 +293,11 @@ class PositionSimilaritySinglePlotter:
             source_lang = results.get("source_lang")
             target_lang = results.get("target_lang")
 
-            title_text = f"Segment Length: {range_id}"
+            title_text = f"SL:: {range_id}"
 
             # Add language information if available
             if target_lang and source_lang:
-                title_text += f"; Lang:: first: {target_lang}, remaining: {source_lang}"
+                title_text += f"; Lang:: f: {target_lang}, re: {source_lang}"
             elif source_lang:
                 title_text += f"; Lang:: {source_lang}"
 
@@ -302,6 +308,13 @@ class PositionSimilaritySinglePlotter:
 
         # Set x-axis ticks to be integers
         ax.set_xticks(positions)
+
+        # Set y-axis limits if provided
+        if ylim is not None:
+            ax.set_ylim(ylim)
+
+        # Format y-axis to show at most 3 decimal places
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
 
         # Add grid for better readability
         ax.grid(True, linestyle="--", alpha=0.7)
@@ -507,6 +520,7 @@ class DirectionalLeakageSinglePlotter:
         results: Dict[str, Any],
         show_title: bool = True,
         compact: bool = True,
+        xlim: Optional[Tuple[float, float]] = None,
     ) -> None:
         """
         Plot directional leakage results in an existing subplot.
@@ -516,6 +530,7 @@ class DirectionalLeakageSinglePlotter:
             results: Results from run_directional_leakage_analysis
             show_title: Whether to show the title
             compact: Whether to use a compact plot style for multi-plot figures
+            xlim: Optional tuple specifying (min, max) x-axis limits
         """
         # Create histograms comparing forward and backward influence
         num_bins = 20 if compact else 30
@@ -574,13 +589,11 @@ class DirectionalLeakageSinglePlotter:
                 source_lang = results.get("source_lang")
                 target_lang = results.get("target_lang")
 
-                title_text = f"Segment Length: {range_id}"
+                title_text = f"SL:: {range_id}"
 
                 # Add language information if available
                 if target_lang and source_lang:
-                    title_text += (
-                        f"; Lang:: first: {target_lang}, remaining: {source_lang}"
-                    )
+                    title_text += f"; Lang:: f: {target_lang}, re: {source_lang}"
                 elif source_lang:
                     title_text += f"; Lang:: {source_lang}"
 
@@ -599,15 +612,11 @@ class DirectionalLeakageSinglePlotter:
                 source_lang = results.get("source_lang")
                 target_lang = results.get("target_lang")
 
-                title_text = (
-                    f"{model_name} (size {size_info})\nSegment Length: {range_id}"
-                )
+                title_text = f"{model_name} (size {size_info})\nSL: {range_id}"
 
                 # Add language information if available
                 if target_lang and source_lang:
-                    title_text += (
-                        f"; Lang:: first: {target_lang}, remaining: {source_lang}"
-                    )
+                    title_text += f"; Lang:: f: {target_lang}, re: {source_lang}"
                 elif source_lang:
                     title_text += f"; Lang:: {source_lang}"
 
@@ -623,11 +632,15 @@ class DirectionalLeakageSinglePlotter:
         # Add legend
         ax.legend(fontsize=8 if compact else 10)
 
-        # Make sure axis limits are appropriate
-        if (
+        # Set x-axis limits
+        if xlim is not None:
+            # Use provided global limits for consistent scaling across model
+            ax.set_xlim(xlim)
+        elif (
             len(results["forward_influence"]) > 0
             and len(results["backward_influence"]) > 0
         ):
+            # Fallback to automatic limits if no global limits provided
             all_values = results["forward_influence"] + results["backward_influence"]
             min_val = max(min(all_values) - 0.01, -1.0)  # Cosine sim range is [-1, 1]
             max_val = min(max(all_values) + 0.01, 1.0)
