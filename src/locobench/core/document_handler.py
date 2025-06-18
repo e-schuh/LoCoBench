@@ -11,7 +11,7 @@ from typing import List, Dict, Tuple, Union
 import polars as pl
 from transformers import AutoTokenizer
 from locobench.utils.custom_data_collator import CustomDataCollatorWithPadding
-from datasets import Dataset
+from datasets import Dataset, DatasetDict
 import torch
 from torch.utils.data import DataLoader
 
@@ -542,6 +542,76 @@ class DocumentHandler:
         )
 
         return {"concatenated": concatenated_dataset, "standalone": standalone_dataset}
+
+    def prepare_datasets_wiki_parallel(
+        self,
+        dataset_dict: DatasetDict,
+        concat_indices: List[List[int]],
+        # standalone_indices: List[int],
+        separator: str = " ",
+        source_lang: str = "en",
+        target_lang: str = None,
+    ) -> Tuple[Dict[str, Dataset], List[List[int]], List[int]]:
+
+        # Prepare source dataset
+        source_dataset = dataset_dict[source_lang]
+        joined_dataset = {}
+        for i in range(len(source_dataset)):
+            source_doc = source_dataset[i]
+            joined_dataset[source_doc["id"]] = source_doc
+
+        # Multilingual case: if target_lang is provided, add target dataset to joined_dataset
+        if target_lang:
+            target_dataset = dataset_dict[target_lang]
+            for i in range(len(target_dataset)):
+                target_doc = target_dataset[i]
+                joined_dataset[target_doc["id"]] = target_doc
+
+        concat_indices_lang_codes = []
+        for indices in concat_indices:
+            lang_code_indices = []
+            for i, idx in enumerate(indices):
+                if target_lang and (
+                    i == 0
+                ):  # If in multilingual mode (i.e., target_lang is provided), then First segment is always in target language
+                    lang_code_indices.append(f"{idx}{target_lang}")
+                else:
+                    lang_code_indices.append(f"{idx}{source_lang}")
+            concat_indices_lang_codes.append(lang_code_indices)
+
+        # Flatten concat_indices_lang_codes and get unique values
+        standalone_indices_lang_codes = sorted(
+            list({item for sublist in concat_indices_lang_codes for item in sublist})
+        )
+
+        # Create standalone dataset
+        filtered_docs = []
+        for id in standalone_indices_lang_codes:
+            filtered_docs.append(joined_dataset[id])
+        standalone_dataset = self.create_dataset_from_tokenized_docs_list(filtered_docs)
+
+        # Create concatenated dataset
+        concatenated_docs = []
+        # Create concatenated samples based on the provided indices
+        for ids in concat_indices_lang_codes:
+            # Get the documents corresponding to the indices
+            selected_docs = []
+            for id in ids:
+                selected_docs.append(joined_dataset[id])
+            # Concatenate the selected documents
+            concatenated_doc = self.concat_tokenized_documents(
+                selected_docs, separator=separator
+            )
+            concatenated_docs.append(concatenated_doc)
+        concatenated_dataset = self.create_dataset_from_tokenized_docs_list(
+            concatenated_docs
+        )
+
+        datasets = {
+            "concatenated": concatenated_dataset,
+            "standalone": standalone_dataset,
+        }
+        return datasets, concat_indices_lang_codes, standalone_indices_lang_codes
 
     def create_and_store_metadata(
         self,

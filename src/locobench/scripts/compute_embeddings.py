@@ -74,19 +74,40 @@ def create_run_name(config: Dict[str, Any]) -> str:
     """
     model_name = config["model_name"].replace("/", "_")
     dataset_name = os.path.basename(os.path.dirname(config["tokenized_dataset_path"]))
-    concat_strategy = config["concatenation_strategy"]
-    concat_size = config["concat_size"]
 
-    # Extract ranges info
-    ranges_str = ""
-    if "position_specific_ranges" in config:
-        ranges = config["position_specific_ranges"]
-        ranges_parts = []
-        for start, end in ranges:
-            ranges_parts.append(f"{start}-{end}")
-        ranges_str = f"ranges_{'_'.join(ranges_parts)}"
+    # Handle both old and new index generation approaches
+    if "indices_path" in config:
+        # New approach using pre-generated indices
+        concat_size = config.get("concat_size", "unknown")
+        source_lang = config.get("source_lang", "unknown")
+        target_lang = config.get("target_lang", "none")
 
-    return f"{model_name}__{dataset_name}__{concat_strategy}__concat-size{concat_size}_{ranges_str}"
+        # Extract segment range info
+        range_str = ""
+        if "source_segment_range" in config:
+            min_range, max_range = config["source_segment_range"]
+            range_str = f"__range{min_range}-{max_range}"
+
+        # Create run name for parallel indices approach
+        if target_lang and target_lang != "none":
+            return f"{model_name}__{dataset_name}__parallel__{source_lang}_{target_lang}__concat-size{concat_size}{range_str}"
+        else:
+            return f"{model_name}__{dataset_name}__parallel__{source_lang}__concat-size{concat_size}{range_str}"
+    else:
+        # Legacy approach
+        concat_strategy = config.get("concatenation_strategy", "unknown")
+        concat_size = config.get("concat_size", "unknown")
+
+        # Extract ranges info
+        ranges_str = ""
+        if "position_specific_ranges" in config:
+            ranges = config["position_specific_ranges"]
+            ranges_parts = []
+            for start, end in ranges:
+                ranges_parts.append(f"{start}-{end}")
+            ranges_str = f"ranges_{'_'.join(ranges_parts)}"
+
+        return f"{model_name}__{dataset_name}__{concat_strategy}__concat-size{concat_size}_{ranges_str}"
 
 
 def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -102,23 +123,27 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
     # Extract configuration parameters
     model_name = config["model_name"]
     tokenized_dataset_path = config["tokenized_dataset_path"]
-    metadata_path = config["metadata_path"]
+    metadata_path = config.get(
+        "metadata_path"
+    )  # May not be needed when using pre-generated indices
 
-    # Get experiment parameters
-    concat_params = {
-        "concatenation_strategy": config["concatenation_strategy"],
-        "concat_size": config["concat_size"],
-        "sample_size": config["sample_size"],
-        "max_total_length": config.get("max_total_length"),
-        "source_lang": config.get("source_lang", None),
-        "target_lang": config.get("target_lang", None),
-    }
+    # Get experiment parameters (may not be present when using pre-generated indices)
+    concat_params = {}
+    if "concatenation_strategy" in config:
+        concat_params = {
+            "concatenation_strategy": config["concatenation_strategy"],
+            "concat_size": config["concat_size"],
+            "sample_size": config["sample_size"],
+            "max_total_length": config.get("max_total_length"),
+            "source_lang": config.get("source_lang", None),
+            "target_lang": config.get("target_lang", None),
+        }
 
-    # Add position-specific ranges if present
-    if "position_specific_ranges" in config:
-        concat_params["position_specific_ranges"] = [
-            tuple(range_pair) for range_pair in config["position_specific_ranges"]
-        ]
+        # Add position-specific ranges if present
+        if "position_specific_ranges" in config:
+            concat_params["position_specific_ranges"] = [
+                tuple(range_pair) for range_pair in config["position_specific_ranges"]
+            ]
 
     # Determine device
     device = config.get(
@@ -135,8 +160,32 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
     print(f"Loading tokenized dataset from {tokenized_dataset_path}...")
     tokenized_dataset = load_from_disk(tokenized_dataset_path)
 
-    # Check if reference config is provided for indices
-    if "reference_config_path" in config:
+    # Check if indices file is provided
+    if "indices_path" in config:
+        print(f"Loading indices from file: {config['indices_path']}")
+        with open(config["indices_path"], "r") as f:
+            indices_data = json.load(f)
+        concat_indices = indices_data.get("concat_indices", [])
+        standalone_indices = indices_data.get("standalone_indices", [])
+
+        # Extract generation config and merge into main config
+        generation_config = indices_data.get("generation_config", {})
+        for key, value in generation_config.items():
+            if key not in config:  # Don't override existing config values
+                config[key] = value
+
+        # Set default concatenation strategy if not specified
+        if "concatenation_strategy" not in config:
+            config["concatenation_strategy"] = (
+                "permutations"  # Default for new parallel indices
+            )
+
+        print(
+            f"Loaded {len(concat_indices)} concat indices and {len(standalone_indices)} standalone indices"
+        )
+        print(f"Merged generation config: {generation_config}")
+    # Check if reference config is provided for indices (legacy support)
+    elif "reference_config_path" in config:
         print(
             f"Loading indices from reference config: {config['reference_config_path']}"
         )
@@ -148,15 +197,16 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
             f"Loaded {len(concat_indices)} concat indices and {len(standalone_indices)} standalone indices"
         )
     else:
-        # Generate concatenation indices as before
+        # Generate concatenation indices as before (legacy approach)
+        if not metadata_path or not concat_params:
+            raise ValueError(
+                "When not using 'indices_path', 'metadata_path' and concatenation parameters "
+                "(concatenation_strategy, concat_size, sample_size) must be provided"
+            )
         print("Generating new concatenation indices...")
         concat_indices, standalone_indices = create_concatenation_indices(
             metadata_path=metadata_path, **concat_params
         )
-
-    # Save the indices to configuration
-    config["concat_indices"] = concat_indices
-    config["standalone_indices"] = standalone_indices
 
     # Initialize document handler with the same tokenizer
     document_handler = DocumentHandler(tokenizer_name=model_name)
@@ -164,14 +214,47 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
     # Get separator for dataset preparation
     separator = config.get("separator", " ")
 
-    # Prepare datasets (standalone and concatenated)
-    print("Preparing datasets for embedding...")
-    datasets = document_handler.prepare_datasets(
-        dataset=tokenized_dataset,
-        concat_indices=concat_indices,
-        standalone_indices=standalone_indices,
-        separator=separator,
-    )
+    # Case for wiki_parallel
+    if "mode" in config and config["mode"] == "wiki_parallel":
+        print("Preparing datasets for embedding in wiki_parallel mode...")
+        source_lang = config.get("source_lang", None)
+        target_lang = config.get("target_lang", None)
+        if source_lang is None:
+            raise ValueError(
+                "For wiki_parallel mode, 'source_lang' and optionally 'target_lang' must be specified in the config."
+            )
+        if target_lang is None:
+            print(
+                f"Monolingual wiki_parallel mode detected for language:: source: {source_lang}"
+            )
+        else:
+            print(
+                f"Bilingual wiki_parallel mode detected for languages:: source: {source_lang} and target: {target_lang}"
+            )
+        datasets, concat_indices, standalone_indices = (
+            document_handler.prepare_datasets_wiki_parallel(
+                dataset_dict=tokenized_dataset,
+                concat_indices=concat_indices,
+                # standalone_indices=standalone_indices,
+                separator=separator,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        )
+
+    # Case for regular embedding computation
+    else:
+        print("Preparing datasets for embedding...")
+        datasets = document_handler.prepare_datasets(
+            dataset=tokenized_dataset,
+            concat_indices=concat_indices,
+            standalone_indices=standalone_indices,
+            separator=separator,
+        )
+
+    # Save the indices to configuration
+    config["concat_indices"] = concat_indices
+    config["standalone_indices"] = standalone_indices
 
     standalone_dataset = datasets["standalone"]
     concat_dataset = datasets["concatenated"]

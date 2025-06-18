@@ -15,6 +15,7 @@ import json
 import argparse
 from pathlib import Path
 from typing import Dict, Any
+from datasets import DatasetDict
 
 # Add project root to path to ensure imports work
 project_root = str(Path(__file__).parent.parent.parent.parent.absolute())
@@ -140,9 +141,25 @@ def tokenize_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Create and store metadata
     print("Creating and storing metadata...")
-    metadata, metadata_path = document_handler.create_and_store_metadata(
-        tokenized_dataset=tokenized_dataset, directory_path=output_path
-    )
+    if isinstance(tokenized_dataset, DatasetDict):
+        # If it's a DatasetDict, we need to handle each split
+        metadata = {}
+        metadata_path = {}
+        for split, dataset in tokenized_dataset.items():
+            split_output_path = os.path.join(output_path, split)
+            os.makedirs(split_output_path, exist_ok=True)
+            split_metadata, split_metadata_path = (
+                document_handler.create_and_store_metadata(
+                    tokenized_dataset=dataset, directory_path=split_output_path
+                )
+            )
+            metadata[split] = split_metadata
+            metadata_path[split] = split_metadata_path
+    else:
+        # If it's a single Dataset, handle it directly
+        metadata, metadata_path = document_handler.create_and_store_metadata(
+            tokenized_dataset=tokenized_dataset, directory_path=output_path
+        )
 
     # Update config with output information
     config["tokenized_dataset_path"] = output_path

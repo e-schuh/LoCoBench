@@ -179,4 +179,6 @@ data/
 notebooks/
 config/Alibaba_mGTE/
 config/JinaAi_jina-v3/
+config/cohere/
+config/wiki_parallel
 .DS_Store
