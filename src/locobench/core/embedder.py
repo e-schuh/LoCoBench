@@ -80,7 +80,10 @@ class BaseEmbedder:
         # If model is jinaai/jina-embeddings-v3, then add task_id
         if self.model_name == "jinaai/jina-embeddings-v3":
             adapter_mask = torch.full(
-                (input_ids.shape[0],), self.task_id, dtype=torch.int32
+                (input_ids.shape[0],),
+                self.task_id,
+                dtype=torch.int32,
+                device=self.device,
             )
             with torch.no_grad():
                 outputs = self.model(
