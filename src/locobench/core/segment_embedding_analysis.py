@@ -199,6 +199,7 @@ def load_exp_info(path: str | Path) -> Dict[str, Any]:
             "concatenation_strategy": config.get("concatenation_strategy", ""),
             "concat_size": config.get("concat_size", 0),
             "position_specific_ranges": config.get("position_specific_ranges", []),
+            "source_segment_range": config.get("source_segment_range", []),
             "source_lang": config.get("source_lang", None),
             "target_lang": config.get("target_lang", None),
         }
@@ -265,6 +266,7 @@ class DocumentSegmentSimilarityAnalyzer:
         self,
         embedding_data: Dict[str, Any],
         document_embedding_type: str = "document-level",
+        matryoshka_dimensions: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """
         Analyze the similarity between long document embeddings and individual segment embeddings.
@@ -276,13 +278,16 @@ class DocumentSegmentSimilarityAnalyzer:
                 - docID_to_listof_segIDs: Dict mapping doc_id to list of segment IDs in order
                 - num_segments_per_doc: Number of segments per document
                 - docID_segID_to_pos: Dict mapping (doc_id, segment_id) to position
+            document_embedding_type: Type of document embedding to use
+            matryoshka_dimensions: Optional list of dimensions to truncate embeddings to for Matryoshka analysis
 
         Returns:
             Dict with position-based similarity statistics:
-                - position_similarities: List of lists containing similarity scores for each position
-                - position_means: Mean similarity score for each position
-                - position_stds: Standard deviation of similarity scores for each position
-                - position_counts: Number of similarity scores for each position
+                - position_similarities: List of lists containing similarity scores for each position (full embeddings)
+                - position_means: Mean similarity score for each position (full embeddings)
+                - position_stds: Standard deviation of similarity scores for each position (full embeddings)
+                - position_counts: Number of similarity scores for each position (full embeddings)
+                - matryoshka_results: Dict containing results for each specified dimension (if matryoshka_dimensions provided)
         """
         # Extract required data from the input dictionary
         segID_to_emb = embedding_data[
@@ -300,6 +305,24 @@ class DocumentSegmentSimilarityAnalyzer:
 
         # For each position, collect similarities across all documents and permutations
         position_similarities = [[] for _ in range(num_segments_per_doc)]
+
+        # Initialize Matryoshka results if dimensions are specified
+        matryoshka_results = {}
+        if matryoshka_dimensions:
+            for dim in matryoshka_dimensions:
+                matryoshka_results[dim] = {
+                    "position_similarities": [[] for _ in range(num_segments_per_doc)]
+                }
+
+        def calculate_similarity_for_embeddings(emb1, emb2, dim=None):
+            """Helper function to calculate similarity, optionally truncating to specified dimension"""
+            if dim is not None:
+                # Truncate embeddings to specified dimension for Matryoshka analysis
+                emb1_truncated = emb1[:dim]
+                emb2_truncated = emb2[:dim]
+                return F.cosine_similarity(emb1_truncated, emb2_truncated, dim=0)
+            else:
+                return F.cosine_similarity(emb1, emb2, dim=0)
 
         if document_embedding_type == "document-level":
             # Process each document
@@ -320,12 +343,23 @@ class DocumentSegmentSimilarityAnalyzer:
                 # Calculate similarity for each segment in the document
                 for seg_id in segments:
                     standalone_emb = segID_to_emb[seg_id]
-                    # Calculate cosine similarity between document embedding and segment embedding
-                    similarity = F.cosine_similarity(doc_emb, standalone_emb, dim=0)
-                    # Look up the position of this segment in the document
                     position = docID_segID_to_pos[(doc_id, seg_id)]
-                    # Store the similarity score for this position
+
+                    # Calculate similarity with full embeddings
+                    similarity = calculate_similarity_for_embeddings(
+                        doc_emb, standalone_emb
+                    )
                     position_similarities[position].append(similarity.item())
+
+                    # Calculate similarity with Matryoshka dimensions if specified
+                    if matryoshka_dimensions:
+                        for dim in matryoshka_dimensions:
+                            similarity_mat = calculate_similarity_for_embeddings(
+                                doc_emb, standalone_emb, dim
+                            )
+                            matryoshka_results[dim]["position_similarities"][
+                                position
+                            ].append(similarity_mat.item())
 
         elif document_embedding_type == "latechunk-segment":
             # Process each document
@@ -346,21 +380,84 @@ class DocumentSegmentSimilarityAnalyzer:
                     if tuple_key not in docID_pos_to_emb:
                         print("Skipping tuple key:", tuple_key)
                         continue
+
                     standalone_emb = segID_to_emb[seg_id]
                     latechunk_emb = docID_pos_to_emb[tuple_key]
-                    # Calculate cosine similarity between latechunk segment embedding and standalone segment embedding
-                    similarity = F.cosine_similarity(
-                        latechunk_emb, standalone_emb, dim=0
+
+                    # Calculate similarity with full embeddings
+                    similarity = calculate_similarity_for_embeddings(
+                        latechunk_emb, standalone_emb
                     )
-                    # Store the similarity score for this position
                     position_similarities[position].append(similarity.item())
+
+                    # Calculate similarity with Matryoshka dimensions if specified
+                    if matryoshka_dimensions:
+                        for dim in matryoshka_dimensions:
+                            similarity_mat = calculate_similarity_for_embeddings(
+                                latechunk_emb, standalone_emb, dim
+                            )
+                            matryoshka_results[dim]["position_similarities"][
+                                position
+                            ].append(similarity_mat.item())
         else:
             raise ValueError(
                 "document_embedding_type must be either 'document-level' or 'latechunk-segment'"
             )
 
-        # Compute statistics for each position
-        # Calculate means, standard deviations, and confidence intervals
+        # Compute statistics for each position (full embeddings)
+        (
+            position_means,
+            position_stds,
+            position_ci_lower,
+            position_ci_upper,
+            position_counts,
+        ) = self._compute_position_statistics(position_similarities)
+
+        # Compute statistics for Matryoshka dimensions
+        if matryoshka_dimensions:
+            for dim in matryoshka_dimensions:
+                dim_similarities = matryoshka_results[dim]["position_similarities"]
+                dim_means, dim_stds, dim_ci_lower, dim_ci_upper, dim_counts = (
+                    self._compute_position_statistics(dim_similarities)
+                )
+                matryoshka_results[dim].update(
+                    {
+                        "position_means": dim_means,
+                        "position_stds": dim_stds,
+                        "position_ci_lower": dim_ci_lower,
+                        "position_ci_upper": dim_ci_upper,
+                        "position_counts": dim_counts,
+                    }
+                )
+
+        results = {
+            "position_similarities": position_similarities,
+            "position_means": position_means,
+            "position_stds": position_stds,
+            "position_counts": position_counts,
+            "position_ci_lower": position_ci_lower,
+            "position_ci_upper": position_ci_upper,
+        }
+
+        # Add Matryoshka results if available
+        if matryoshka_dimensions:
+            results["matryoshka_results"] = matryoshka_results
+            results["matryoshka_dimensions"] = matryoshka_dimensions
+
+        return results
+
+    def _compute_position_statistics(
+        self, position_similarities: List[List[float]]
+    ) -> Tuple[List[float], List[float], List[float], List[float], List[int]]:
+        """
+        Helper function to compute statistics for position similarities.
+
+        Args:
+            position_similarities: List of lists containing similarity scores for each position
+
+        Returns:
+            Tuple containing (means, stds, ci_lower, ci_upper, counts)
+        """
         position_means = []
         position_stds = []
         position_ci_lower = []
@@ -398,16 +495,13 @@ class DocumentSegmentSimilarityAnalyzer:
             position_ci_lower.append(ci_lower)
             position_ci_upper.append(ci_upper)
 
-        results = {
-            "position_similarities": position_similarities,
-            "position_means": position_means,
-            "position_stds": position_stds,
-            "position_counts": position_counts,
-            "position_ci_lower": position_ci_lower,
-            "position_ci_upper": position_ci_upper,
-        }
-
-        return results
+        return (
+            position_means,
+            position_stds,
+            position_ci_lower,
+            position_ci_upper,
+            position_counts,
+        )
 
     def run_position_analysis(
         self,
@@ -415,6 +509,7 @@ class DocumentSegmentSimilarityAnalyzer:
         document_embedding_type: str = "document-level",
         pooling_strategy_segment_standalone: str = "cls",
         pooling_strategy_document: str = "cls",
+        matryoshka_dimensions: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """
         Run complete position-based similarity analysis for a given path.
@@ -423,6 +518,7 @@ class DocumentSegmentSimilarityAnalyzer:
             path: Path to experiment results
             pooling_strategy_segment_standalone: Either "cls" or "mean" for standalone segment embeddings pooling
             pooling_strategy_document: Either "cls" or "mean" for document embeddings pooling
+            matryoshka_dimensions: Optional list of dimensions to truncate embeddings to for Matryoshka analysis
 
         Returns:
             Dict with position-based similarity results including:
@@ -430,6 +526,7 @@ class DocumentSegmentSimilarityAnalyzer:
             - position_means: Mean similarity per position
             - position_stds: Standard deviation of similarity per position
             - position_counts: Number of samples per position
+            - matryoshka_results: Dict containing results for each specified dimension (if matryoshka_dimensions provided)
             - path: Original path parameter
             - num_segments: Number of segments per document
             - pooling_strategy_segment_standalone: Pooling strategy used for standalone segment embeddings
@@ -450,7 +547,9 @@ class DocumentSegmentSimilarityAnalyzer:
 
         # Run similarity analysis with the embedding data
         results = self.calculate_doc_seg_similarity_metrics(
-            embedding_data, document_embedding_type=document_embedding_type
+            embedding_data,
+            document_embedding_type=document_embedding_type,
+            matryoshka_dimensions=matryoshka_dimensions,
         )
 
         # Add path and metadata information
@@ -465,7 +564,11 @@ class DocumentSegmentSimilarityAnalyzer:
         results["model_name"] = exp_info["model_name"]
         results["concatenation_strategy"] = exp_info["concatenation_strategy"]
         results["concat_size"] = exp_info["concat_size"]
-        results["position_specific_ranges"] = exp_info["position_specific_ranges"]
+        results["position_specific_ranges"] = (
+            exp_info["position_specific_ranges"]
+            if exp_info["position_specific_ranges"] != []
+            else ([exp_info["source_segment_range"]] * exp_info["concat_size"])
+        )
 
         # Add language information if available
         if "source_lang" in exp_info and exp_info["source_lang"]:
@@ -593,8 +696,10 @@ class DirectionalLeakageAnalyzer:
         # Add experiment metadata from exp_info
         leakage_results["model_name"] = exp_info.get("model_name", "Unknown model name")
         leakage_results["concat_size"] = exp_info.get("concat_size", 0)
-        leakage_results["position_specific_ranges"] = exp_info.get(
-            "position_specific_ranges", []
+        leakage_results["position_specific_ranges"] = (
+            exp_info["position_specific_ranges"]
+            if exp_info["position_specific_ranges"] != []
+            else ([exp_info["source_segment_range"]] * exp_info["concat_size"])
         )
 
         # Add language information if available

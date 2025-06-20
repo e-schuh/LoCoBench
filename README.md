@@ -104,3 +104,13 @@ poetry run python src/locobench/scripts/create_parallel_indices.py --config conf
 ```bash
 poetry run python src/locobench/scripts/compute_embeddings.py --config config/embedding_config_wiki_parallel_1_en_de.json
 ```
+
+### Script to create config files
+```bash
+./src/locobench/scripts/create_wiki_parallel_configs.sh config/JinaAi_jina-v3/wiki_parallel jina 5 en,de en,de,ko,it,hi 32 8
+```
+
+### Script to run all configs in a folder
+```bash
+./run_all_configs.sh config/JinaAi_jina-v3/wiki_parallel
+```

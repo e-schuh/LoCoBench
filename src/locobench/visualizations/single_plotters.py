@@ -229,6 +229,7 @@ class PositionSimilaritySinglePlotter:
         show_title: bool = True,
         compact: bool = True,
         ylim: Optional[Tuple[float, float]] = None,
+        show_segment_lengths: bool = False,
     ) -> None:
         """
         Plot position-based similarity results in a given subplot.
@@ -239,6 +240,7 @@ class PositionSimilaritySinglePlotter:
             show_title: Whether to show the title (default: True)
             compact: Whether to use a compact plot style for multi-plot figures (default: True)
             ylim: Optional tuple specifying (min, max) y-axis limits
+            show_segment_lengths: Whether to show segment length information in title and legends (default: True)
         """
         # Extract data from results
         position_means = results["position_means"]
@@ -256,16 +258,17 @@ class PositionSimilaritySinglePlotter:
             "abbreviated_model_name", results.get("model_name", "Unknown model")
         )
 
-        # Plot means with a line
+        # Plot means with a line (full embeddings)
         ax.plot(
             positions,
             position_means,
             "o-",
             color="blue",
             linewidth=2,
+            label="Full",
         )
 
-        # Add 95% confidence interval
+        # Add 95% confidence interval for full embeddings
         for i, (pos, mean, ci_lower, ci_upper) in enumerate(
             zip(positions, position_means, position_ci_lower, position_ci_upper)
         ):
@@ -281,6 +284,55 @@ class PositionSimilaritySinglePlotter:
             )
             ax.add_patch(rect)
 
+        # Plot Matryoshka dimensions if available
+        if "matryoshka_results" in results and "matryoshka_dimensions" in results:
+            colors = [
+                "red",
+                "green",
+                "orange",
+                "purple",
+                "brown",
+                "pink",
+                "gray",
+                "olive",
+            ]
+            matryoshka_results = results["matryoshka_results"]
+            matryoshka_dimensions = results["matryoshka_dimensions"]
+
+            for i, dim in enumerate(matryoshka_dimensions):
+                if dim in matryoshka_results:
+                    color = colors[i % len(colors)]
+                    dim_means = matryoshka_results[dim]["position_means"]
+                    dim_ci_lower = matryoshka_results[dim]["position_ci_lower"]
+                    dim_ci_upper = matryoshka_results[dim]["position_ci_upper"]
+
+                    # Plot means for this dimension
+                    ax.plot(
+                        positions,
+                        dim_means,
+                        "o-",
+                        color=color,
+                        linewidth=2,
+                        label=f"D{dim}",
+                        linestyle=(
+                            "--" if i >= 4 else "-"
+                        ),  # Use dashed lines for dimensions 5 and beyond
+                    )
+
+                    # Add confidence intervals for this dimension
+                    for j, (pos, mean, ci_lower, ci_upper) in enumerate(
+                        zip(positions, dim_means, dim_ci_lower, dim_ci_upper)
+                    ):
+                        bar_width = 0.3  # Slightly narrower for Matryoshka dimensions
+                        rect = plt.Rectangle(
+                            (pos - bar_width / 2, ci_lower),
+                            bar_width,
+                            ci_upper - ci_lower,
+                            color=color,
+                            alpha=0.15,  # More transparent for Matryoshka dimensions
+                        )
+                        ax.add_patch(rect)
+
         # Add labels (compact for subplots)
         ax.set_xlabel("Position")
         ax.set_ylabel("Cosine Similarity")
@@ -293,13 +345,16 @@ class PositionSimilaritySinglePlotter:
             source_lang = results.get("source_lang")
             target_lang = results.get("target_lang")
 
-            title_text = f"SL:: {range_id}"
-
             # Add language information if available
             if target_lang and source_lang:
-                title_text += f"; Lang:: f: {target_lang}, re: {source_lang}"
+                title_text = (
+                    f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                )
             elif source_lang:
-                title_text += f"; Lang:: {source_lang}"
+                title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+
+            if show_segment_lengths:
+                title_text += f"; SL:: {range_id}"
 
             if current_title:
                 ax.set_title(f"{current_title}\n{title_text}", fontsize=9)
@@ -318,6 +373,8 @@ class PositionSimilaritySinglePlotter:
 
         # Add grid for better readability
         ax.grid(True, linestyle="--", alpha=0.7)
+
+        # Note: Individual subplot legends are not shown - main legend is at the bottom of the figure
 
     def compute_position_t_tests(
         self,
@@ -521,6 +578,7 @@ class DirectionalLeakageSinglePlotter:
         show_title: bool = True,
         compact: bool = True,
         xlim: Optional[Tuple[float, float]] = None,
+        show_segment_lengths: bool = False,
     ) -> None:
         """
         Plot directional leakage results in an existing subplot.
@@ -589,13 +647,16 @@ class DirectionalLeakageSinglePlotter:
                 source_lang = results.get("source_lang")
                 target_lang = results.get("target_lang")
 
-                title_text = f"SL:: {range_id}"
-
                 # Add language information if available
                 if target_lang and source_lang:
-                    title_text += f"; Lang:: f: {target_lang}, re: {source_lang}"
+                    title_text = (
+                        f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                    )
                 elif source_lang:
-                    title_text += f"; Lang:: {source_lang}"
+                    title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+
+                if show_segment_lengths:
+                    title_text += f"; SL:: {range_id}"
 
                 ax.set_title(title_text, fontsize=9)
             else:

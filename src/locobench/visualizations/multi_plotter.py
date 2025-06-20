@@ -37,12 +37,14 @@ class DirectionalLeakageMultiPlotter:
         self,
         paths: List[str | Path],
         pooling_strategy_segment_standalone: str = "cls",
+        show_segment_lengths: bool = False,
         figure_width: int = 15,
         subplot_height: int = 5,
         save_plot: bool = False,
         save_path: Optional[str] = None,
         show_plot: bool = True,
         return_full_results: bool = False,
+        single_model_mode: Optional[bool] = None,
     ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         Analyze and plot directional leakage for multiple experiments in a grid,
@@ -50,12 +52,14 @@ class DirectionalLeakageMultiPlotter:
 
         Args:
             paths: List of paths to experiment results
+            pooling_strategy_segment_standalone: Either "cls" or "mean" for standalone segment embeddings pooling
             figure_width: Width of the complete figure in inches
             subplot_height: Height of each subplot in inches
             save_plot: Whether to save the plot
             save_path: Path to save the figure (if None and save_plot is True, saves to first path directory)
             show_plot: Whether to display the plot
             return_full_results: Whether to return the full analysis results
+            single_model_mode: If True, optimize layout for single model. If None, auto-detect based on data
 
         Returns:
             If return_full_results is True, returns a dictionary with model names as keys and
@@ -70,12 +74,14 @@ class DirectionalLeakageMultiPlotter:
             pooling_legend_type="segment_standalone",
             subplotter=directional_leakage_single_plotter.plot_directional_leakage_in_subplot,
             pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+            show_segment_lengths=show_segment_lengths,
             figure_width=figure_width,
             subplot_height=subplot_height,
             save_plot=save_plot,
             save_path=save_path,
             show_plot=show_plot,
             return_full_results=return_full_results,
+            single_model_mode=single_model_mode,
         )
 
 
@@ -93,12 +99,15 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         paths: List[str | Path],
         pooling_strategy_segment_standalone: str = "cls",
         pooling_strategy_document: str = "cls",
+        matryoshka_dimensions: Optional[List[int]] = None,
+        show_segment_lengths: bool = False,
         figure_width: int = 15,
         subplot_height: int = 5,
         save_plot: bool = False,
         save_path: Optional[str] = None,
         show_plot: bool = True,
         return_full_results: bool = False,
+        single_model_mode: Optional[bool] = None,
     ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         Analyze and plot position-based similarity metrics for multiple experiments in a grid,
@@ -108,6 +117,8 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             paths: List of paths to experiment results
             pooling_strategy_segment_standalone: Either "cls" or "mean" for standalone segment embeddings pooling
             pooling_strategy_document: Either "cls" or "mean" for document embeddings pooling
+            matryoshka_dimensions: Optional list of dimensions to truncate embeddings to for Matryoshka analysis
+            show_segment_lengths: Whether to show segment length information in titles and legends (default: True)
             figure_width: Width of the complete figure in inches
             subplot_height: Height of each subplot in inches
             save_plot: Whether to save the plot
@@ -131,12 +142,15 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             subplotter=position_similarity_single_plotter.plot_position_similarities_in_subplot,
             pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
             pooling_strategy_document=pooling_strategy_document,
+            matryoshka_dimensions=matryoshka_dimensions,
+            show_segment_lengths=show_segment_lengths,
             figure_width=figure_width,
             subplot_height=subplot_height,
             save_plot=save_plot,
             save_path=save_path,
             show_plot=show_plot,
             return_full_results=return_full_results,
+            single_model_mode=single_model_mode,
         )
 
 
@@ -154,12 +168,15 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
         paths: List[str | Path],
         pooling_strategy_segment_standalone: str = "cls",
         pooling_strategy_document: str = "cls",
+        matryoshka_dimensions: Optional[List[int]] = None,
+        show_segment_lengths: bool = False,
         figure_width: int = 15,
         subplot_height: int = 5,
         save_plot: bool = False,
         save_path: Optional[str] = None,
         show_plot: bool = True,
         return_full_results: bool = False,
+        single_model_mode: Optional[bool] = None,
     ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         Analyze and plot position-based similarity metrics for multiple experiments in a grid,
@@ -169,6 +186,8 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
             paths: List of paths to experiment results
             pooling_strategy_segment_standalone: Either "cls" or "mean" for standalone segment embeddings pooling
             pooling_strategy_document: Either "cls" or "mean" for document embeddings pooling
+            matryoshka_dimensions: Optional list of dimensions to truncate embeddings to for Matryoshka analysis
+            show_segment_lengths: Whether to show segment length information in titles and legends (default: True)
             figure_width: Width of the complete figure in inches
             subplot_height: Height of each subplot in inches
             save_plot: Whether to save the plot
@@ -192,12 +211,15 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
             subplotter=position_similarity_single_plotter.plot_position_similarities_in_subplot,
             pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
             pooling_strategy_document=pooling_strategy_document,
+            matryoshka_dimensions=matryoshka_dimensions,
+            show_segment_lengths=show_segment_lengths,
             figure_width=figure_width,
             subplot_height=subplot_height,
             save_plot=save_plot,
             save_path=save_path,
             show_plot=show_plot,
             return_full_results=return_full_results,
+            single_model_mode=single_model_mode,
         )
 
 
@@ -210,12 +232,15 @@ def analyze_and_plot_multiple_results(
     subplotter: Callable = None,
     pooling_strategy_segment_standalone: str = "cls",
     pooling_strategy_document: str = "cls",
+    matryoshka_dimensions: Optional[List[int]] = None,
+    show_segment_lengths: bool = False,
     figure_width: int = 15,
     subplot_height: int = 4,
     save_plot: bool = False,
     save_path: Optional[str] = None,
     show_plot: bool = True,
     return_full_results: bool = False,
+    single_model_mode: Optional[bool] = None,
 ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
     """
     Analyze and plot multiple experiment results in a grid, organized by model name and concat size.
@@ -224,15 +249,22 @@ def analyze_and_plot_multiple_results(
     Args:
         paths: List of paths to experiment results
         analysis_type: Type of analysis to perform ("position" or "directional_leakage")
+        document_embedding_type: Type of document embedding to use
+        title: Title for the plot
+        pooling_legend_type: Type of pooling legend to show
+        subplotter: Function to use for plotting individual subplots
         pooling_strategy_segment_standalone: Either "cls" or "mean" for standalone segment embeddings pooling
         pooling_strategy_document: Either "cls" or "mean" for document embeddings pooling
                                       (only used for position analysis)
+        matryoshka_dimensions: Optional list of dimensions to truncate embeddings to for Matryoshka analysis
+        show_segment_lengths: Whether to show segment length information in titles and legends (default: True)
         figure_width: Width of the complete figure in inches
         subplot_height: Height of each subplot in inches
         save_plot: Whether to save the plot
         save_path: Path to save the figure (if None and save_plot is True, saves to first path directory)
         show_plot: Whether to display the plot
         return_full_results: Whether to return the full analysis results
+        single_model_mode: If True, optimize layout for single model. If None, auto-detect based on data
 
     Returns:
         If return_full_results is True, returns a dictionary with model names as keys and
@@ -248,6 +280,7 @@ def analyze_and_plot_multiple_results(
             document_embedding_type=document_embedding_type,
             pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
             pooling_strategy_document=pooling_strategy_document,
+            matryoshka_dimensions=matryoshka_dimensions,
         )
         plot_in_subplot = subplotter
     elif analysis_type == "directional_leakage":
@@ -379,13 +412,35 @@ def analyze_and_plot_multiple_results(
         if model_name != list(model_groups.keys())[-1]:
             spacing_offset += 1
 
+    # Detect if we have only one model for layout optimization
+    if single_model_mode is None:
+        # Auto-detect based on data
+        single_model_mode = len(model_groups.keys()) == 1
+    # If explicitly set by user, use that value
+
     # Create figure with GridSpec for flexible subplot layout
-    fig = plt.figure(
-        figsize=(
-            figure_width * len(model_groups.keys()) * 1.0,
-            subplot_height * num_rows,
+    if single_model_mode:
+        # For single model, make subplots square and use full width
+        # Calculate optimal dimensions based on number of columns
+        max_cols_for_single_model = max(
+            max_variations_per_model_size.get((list(model_groups.keys())[0], size), 0)
+            for size in all_concat_sizes
         )
-    )
+        # Make figure wider and shorter to accommodate square subplots
+        fig = plt.figure(
+            figsize=(
+                max_cols_for_single_model
+                * 4.5,  # Much wider - about 4.5 inches per column
+                num_rows * 3.5,  # Shorter height - about 3.5 inches per row
+            )
+        )
+    else:
+        fig = plt.figure(
+            figsize=(
+                figure_width * len(model_groups.keys()) * 1.0,
+                subplot_height * num_rows,
+            )
+        )
 
     # Add spacing between models using width_ratios
     width_ratios = []
@@ -403,40 +458,55 @@ def analyze_and_plot_multiple_results(
     spacing_cols = len(model_groups) - 1
     total_cols_with_spacing = total_cols + spacing_cols
 
-    # Create GridSpec with custom width ratios and increased wspace and hspace
-    gs = GridSpec(
-        num_rows,
-        total_cols_with_spacing,
-        figure=fig,
-        width_ratios=width_ratios,
-        wspace=0.45,  # Increased horizontal space between subplots to prevent y-axis label overlap
-        hspace=0.35,  # More space between rows
-    )
+    # Create GridSpec with custom width ratios and spacing optimized for single/multi model
+    if single_model_mode:
+        # For single model, optimize spacing for square subplots
+        # Can use less spacing since we're hiding redundant axis labels
+        gs = GridSpec(
+            num_rows,
+            total_cols_with_spacing,
+            figure=fig,
+            width_ratios=width_ratios,
+            wspace=0.12,  # Reduced since y-axis labels are hidden on most subplots
+            hspace=0.30,  # Reduced since x-axis labels are hidden on most subplots
+        )
+    else:
+        # For multiple models, use optimized spacing since axis labels are now hidden
+        gs = GridSpec(
+            num_rows,
+            total_cols_with_spacing,
+            figure=fig,
+            width_ratios=width_ratios,
+            wspace=0.35,  # Reduced from 0.45 since y-axis labels are hidden on most subplots
+            hspace=0.30,  # Reduced from 0.35 since x-axis labels are hidden on most subplots
+        )
 
     # --- Center model names above their columns ---
     # Calculate the center x-position for each model's columns using axes positions
-    for model_idx, (model_name, results) in enumerate(model_groups.items()):
-        col_start = model_col_start_indices[model_name]
-        model_width = model_col_counts[model_name]
-        # Find the leftmost and rightmost axes for this model in the top row
-        top_row = 0
-        left_ax = fig.add_subplot(gs[top_row, col_start])
-        right_ax = fig.add_subplot(gs[top_row, col_start + model_width - 1])
-        left_bbox = left_ax.get_position()
-        right_bbox = right_ax.get_position()
-        left_ax.remove()
-        right_ax.remove()
-        # Center x is the midpoint between left and right axes
-        center_x = (left_bbox.x0 + right_bbox.x1) / 2
-        fig.text(
-            center_x,
-            0.93,  # Higher up for more space below model names
-            model_name,
-            ha="center",
-            va="center",
-            fontsize=18,
-            fontweight="bold",
-        )
+    # Only show model names if we have multiple models
+    if not single_model_mode:
+        for model_idx, (model_name, results) in enumerate(model_groups.items()):
+            col_start = model_col_start_indices[model_name]
+            model_width = model_col_counts[model_name]
+            # Find the leftmost and rightmost axes for this model in the top row
+            top_row = 0
+            left_ax = fig.add_subplot(gs[top_row, col_start])
+            right_ax = fig.add_subplot(gs[top_row, col_start + model_width - 1])
+            left_bbox = left_ax.get_position()
+            right_bbox = right_ax.get_position()
+            left_ax.remove()
+            right_ax.remove()
+            # Center x is the midpoint between left and right axes
+            center_x = (left_bbox.x0 + right_bbox.x1) / 2
+            fig.text(
+                center_x,
+                0.93,  # Higher up for more space below model names
+                model_name,
+                ha="center",
+                va="center",
+                fontsize=18,
+                fontweight="bold",
+            )
 
     # Add concat_size label only once per row (on the left)
     concat_size_label_drawn = set()
@@ -468,7 +538,12 @@ def analyze_and_plot_multiple_results(
                 if analysis_type == "position":
                     ylim = model_ylims.get(model_name)
                     plot_in_subplot(
-                        ax, result, show_title=True, compact=True, ylim=ylim
+                        ax,
+                        result,
+                        show_title=True,
+                        compact=True,
+                        ylim=ylim,
+                        show_segment_lengths=show_segment_lengths,
                     )
                 elif analysis_type == "directional_leakage":
                     xlim = model_xlims.get(model_name)
@@ -476,7 +551,22 @@ def analyze_and_plot_multiple_results(
                         ax, result, show_title=True, compact=True, xlim=xlim
                     )
                 else:
-                    plot_in_subplot(ax, result, show_title=True, compact=True)
+                    plot_in_subplot(
+                        ax,
+                        result,
+                        show_title=True,
+                        compact=True,
+                        show_segment_lengths=show_segment_lengths,
+                    )
+
+                # Control axis labels visibility
+                # Y-axis label: only show on leftmost subplot of each row
+                if not (model_idx == 0 and local_col_idx == 0):
+                    ax.set_ylabel("")
+
+                # X-axis label: only show on bottom subplot of each column
+                if row_idx != num_rows - 1:  # Not the bottom row
+                    ax.set_xlabel("")
 
                 # Only draw concat_size label once per row, on the leftmost subplot
                 if (
@@ -484,8 +574,10 @@ def analyze_and_plot_multiple_results(
                     and model_idx == 0
                     and local_col_idx == 0
                 ):
+                    # Adjust label position based on single model mode
+                    x_pos = -0.25 if single_model_mode else -0.50
                     ax.text(
-                        -0.50,  # Increased spacing for row labels to prevent overlap with first column
+                        x_pos,  # Closer to subplot for single model mode
                         0.5,
                         f"# of Segments: {concat_size}",
                         verticalalignment="center",
@@ -513,58 +605,99 @@ def analyze_and_plot_multiple_results(
                 ax.axis("off")
 
     # Adjust layout - leave more space at top for main title and bottom for legends
-    plt.tight_layout(rect=[0, 0, 1, 0.85])  # More space at top and bottom
+    if single_model_mode:
+        # For single model, adjust for wider/shorter layout
+        plt.tight_layout(rect=[0.02, 0.08, 0.98, 0.93])  # More margins on all sides
+    else:
+        plt.tight_layout(rect=[0, 0, 1, 0.85])  # More space at top and bottom
 
     # Add overall title
-    y_title = 1.03
-    y_subtitle = y_title - 0.03
+    if single_model_mode:
+        # For single model, position title higher and include model name in title
+        single_model_name = list(model_groups.keys())[0]
+        y_title = 0.96  # Adjusted for new layout
+        y_subtitle = y_title - 0.035
 
-    if analysis_type == "position":
-        # Split into two lines for different font sizes for position analysis
-        fig.suptitle(
-            title,
-            fontsize=24,
-            fontweight="bold",
-            y=y_title,
-        )
-        # subtitle_text = f"Document-level Pooling Strategy: {pooling_strategy_document}, Standalone Segment Pooling Strategy: {pooling_strategy_segment_standalone}"
-        # # Add the second line as a separate text object with fontsize=18
-        # fig.text(
-        #     0.5,
-        #     y_subtitle,
-        #     subtitle_text,
-        #     ha="center",
-        #     va="top",
-        #     fontsize=18,
-        # )
+        if analysis_type == "position":
+            # Include model name in the title for single model
+            title_with_model = f"{title} - {single_model_name}"
+            fig.suptitle(
+                title_with_model,
+                fontsize=22,
+                fontweight="bold",
+                y=y_title,
+            )
+        elif analysis_type == "directional_leakage":
+            # Include model name in the title for single model
+            title_with_model = f"{title} - {single_model_name}"
+            fig.suptitle(
+                title_with_model,
+                fontsize=22,
+                fontweight="bold",
+                y=y_title,
+            )
 
-    elif analysis_type == "directional_leakage":
-        # Directional leakage title
-        fig.suptitle(
-            title,
-            fontsize=24,
-            fontweight="bold",
-            y=y_title,
-        )
+            # Add legend explaining directional leakage for single model
+            subtitle_text = (
+                "Forward Similarity (F): Earlier segments' standalone embeddings ↔ Later segments' contextualized embeddings\n"
+                "Backward Similarity (B): Later segments' standalone embeddings ↔ Earlier segments' contextualized embeddings"
+            )
+            fig.text(
+                0.5,
+                y_subtitle,  # Position between title and plots
+                subtitle_text,
+                ha="center",
+                va="top",
+                fontsize=16,  # Slightly smaller for single model
+            )
+    else:
+        # For multiple models, use original positioning
+        y_title = 1.03
+        y_subtitle = y_title - 0.03
+
+        if analysis_type == "position":
+            # Split into two lines for different font sizes for position analysis
+            fig.suptitle(
+                title,
+                fontsize=24,
+                fontweight="bold",
+                y=y_title,
+            )
+        elif analysis_type == "directional_leakage":
+            # Directional leakage title
+            fig.suptitle(
+                title,
+                fontsize=24,
+                fontweight="bold",
+                y=y_title,
+            )
 
         # Add legend explaining directional leakage
-        subtitle_text = (
-            "Forward Similarity (F): Earlier segments' standalone embeddings ↔ Later segments' contextualized embeddings\n"
-            "Backward Similarity (B): Later segments' standalone embeddings ↔ Earlier segments' contextualized embeddings"
-        )
-        fig.text(
-            0.5,
-            y_subtitle,  # Position between title and plots
-            subtitle_text,
-            ha="center",
-            va="top",
-            fontsize=18,
-        )
+        if analysis_type == "directional_leakage":
+            subtitle_text = (
+                "Forward Similarity (F): Earlier segments' standalone embeddings ↔ Later segments' contextualized embeddings\n"
+                "Backward Similarity (B): Later segments' standalone embeddings ↔ Earlier segments' contextualized embeddings"
+            )
+            fig.text(
+                0.5,
+                y_subtitle,  # Position between title and plots
+                subtitle_text,
+                ha="center",
+                va="top",
+                fontsize=18,
+            )
 
     # Add custom legends based on analysis type
-    legend_y = 0.05
+    if single_model_mode:
+        legend_y = 0.01  # Lower position for single model due to new layout
+    else:
+        legend_y = 0.05
     if analysis_type == "position":
-        # Position analysis legend
+        # Position analysis legend - check if Matryoshka dimensions are present
+        handles = []
+        labels = []
+
+        # Always include full embedding
         mean_line = mlines.Line2D(
             [],
             [],
@@ -572,20 +705,54 @@ def analyze_and_plot_multiple_results(
             marker="o",
             linestyle="-",
             linewidth=2,
-            label="Mean Similarity",
+            label="Full",
         )
+        handles.append(mean_line)
+
+        # Add Matryoshka dimensions if present (check first result for Matryoshka data)
+        has_matryoshka = any("matryoshka_results" in result for result in all_results)
+        if has_matryoshka and matryoshka_dimensions:
+            colors = [
+                "red",
+                "green",
+                "orange",
+                "purple",
+                "brown",
+                "pink",
+                "gray",
+                "olive",
+            ]
+            for i, dim in enumerate(matryoshka_dimensions):
+                color = colors[i % len(colors)]
+                mat_line = mlines.Line2D(
+                    [],
+                    [],
+                    color=color,
+                    marker="o",
+                    linestyle="--" if i >= 4 else "-",
+                    linewidth=2,
+                    label=f"D{dim}",
+                )
+                handles.append(mat_line)
+
+        # Add confidence interval patch
         ci_patch = mpatches.Patch(
             color="blue", alpha=0.2, label="95% Confidence Interval"
         )
+        handles.append(ci_patch)
+
+        # Determine number of columns based on number of handles
+        ncol = min(len(handles), 6)  # Maximum 6 columns to avoid overcrowding
+
         fig.legend(
-            handles=[mean_line, ci_patch],
+            handles=handles,
             loc="lower center",
             bbox_to_anchor=(0.5, legend_y),
-            ncol=2,
-            fontsize=10,
+            ncol=ncol,
+            fontsize=9,
             frameon=False,
-            columnspacing=2.5,
-            handletextpad=1.5,
+            columnspacing=2.0,
+            handletextpad=1.2,
         )
     else:
         # Directional leakage legend
@@ -604,77 +771,83 @@ def analyze_and_plot_multiple_results(
             handletextpad=1.5,
         )
 
-    # Create pooling strategy legend text
-    # Move the legend box further down to avoid overlap with the similarity legend
-    y_pos = -0.07  # Lowered from 0 to -0.08
+    # Create pooling strategy legend text (only if show_segment_lengths is True)
+    if show_segment_lengths:
+        # Move the legend box further down to avoid overlap with the similarity legend
+        if single_model_mode:
+            y_pos = -0.03  # Adjusted for new layout
+        else:
+            y_pos = -0.07  # Lowered from 0 to -0.08
 
-    pooling_legend_lines = ["Pooling Strategies:"]
-    if pooling_legend_type == "segment_standalone":
-        pooling_legend_lines.append(
-            f"Segment Standalone: {pooling_strategy_segment_standalone.upper()}"
-        )
-    elif pooling_legend_type == "segment_standalone_and_document":
-        pooling_legend_lines.append(
-            f"Segment Standalone: {pooling_strategy_segment_standalone.upper()}"
-        )
-        pooling_legend_lines.append(
-            f"Document-Level: {pooling_strategy_document.upper()}"
-        )
-    pooling_legend_text = "\n".join(pooling_legend_lines)
+        pooling_legend_lines = ["Pooling Strategies:"]
+        if pooling_legend_type == "segment_standalone":
+            pooling_legend_lines.append(
+                f"Segment Standalone: {pooling_strategy_segment_standalone.upper()}"
+            )
+        elif pooling_legend_type == "segment_standalone_and_document":
+            pooling_legend_lines.append(
+                f"Segment Standalone: {pooling_strategy_segment_standalone.upper()}"
+            )
+            pooling_legend_lines.append(
+                f"Document-Level: {pooling_strategy_document.upper()}"
+            )
+        pooling_legend_text = "\n".join(pooling_legend_lines)
 
-    # Add ranges and pooling strategy legend in a single box if there are different ranges
-    if ranges_info:
-        # Build segment lengths legend
-        legend_lines = ["Segment Lengths:"]
-        for ranges_tuple, range_id in ranges_info.items():
-            ranges_str = " | ".join([f"{start}-{end}" for start, end in ranges_tuple])
-            legend_lines.append(f"{range_id}=({ranges_str})")
-        # Force correct label for the first line (avoid LaTeX/spacing issues)
-        segment_lengths_legend_text = (
-            r"$\mathbf{Segment\ Lengths:}$" + "\n" + "\n".join(legend_lines[1:])
-        )
+        # Add ranges and pooling strategy legend in a single box if there are different ranges
+        if ranges_info:
+            # Build segment lengths legend
+            legend_lines = ["Segment Lengths:"]
+            for ranges_tuple, range_id in ranges_info.items():
+                ranges_str = " | ".join(
+                    [f"{start}-{end}" for start, end in ranges_tuple]
+                )
+                legend_lines.append(f"{range_id}=({ranges_str})")
+            # Force correct label for the first line (avoid LaTeX/spacing issues)
+            segment_lengths_legend_text = (
+                r"$\mathbf{Segment\ Lengths:}$" + "\n" + "\n".join(legend_lines[1:])
+            )
 
-        # Pooling legend: only first line bold, force correct label
-        pooling_legend_lines = pooling_legend_text.split("\n")
-        pooling_legend_lines[0] = "Pooling Strategies:"
-        pooling_legend_text = (
-            r"$\mathbf{Pooling\ Strategies:}$"
-            + "\n"
-            + "\n".join(pooling_legend_lines[1:])
-        )
+            # Pooling legend: only first line bold, force correct label
+            pooling_legend_lines = pooling_legend_text.split("\n")
+            pooling_legend_lines[0] = "Pooling Strategies:"
+            pooling_legend_text = (
+                r"$\mathbf{Pooling\ Strategies:}$"
+                + "\n"
+                + "\n".join(pooling_legend_lines[1:])
+            )
 
-        # Combine both legends horizontally with spacing
-        combined_legend_text = (
-            segment_lengths_legend_text + "\n\n" + pooling_legend_text
-        )
-        # Use a single box, with left alignment
-        fig.text(
-            0.5,  # Centered horizontally
-            y_pos,
-            combined_legend_text,
-            ha="center",
-            fontsize=10,
-            bbox=dict(facecolor="white", alpha=0.5, boxstyle="round,pad=0.7"),
-            usetex=False,
-        )
-    else:
-        # Only show pooling strategies legend centered
-        pooling_legend_lines = pooling_legend_text.split("\n")
-        pooling_legend_lines[0] = "Pooling Strategies:"
-        pooling_legend_text = (
-            r"$\mathbf{Pooling\ Strategies:}$"
-            + "\n"
-            + "\n".join(pooling_legend_lines[1:])
-        )
-        fig.text(
-            0.5,  # Center position for the pooling strategies legend
-            y_pos,
-            pooling_legend_text,
-            ha="left",
-            fontsize=10,
-            bbox=dict(facecolor="white", alpha=0.5, boxstyle="round,pad=0.5"),
-            usetex=False,
-        )
+            # Combine both legends horizontally with spacing
+            combined_legend_text = (
+                segment_lengths_legend_text + "\n\n" + pooling_legend_text
+            )
+            # Use a single box, with left alignment
+            fig.text(
+                0.5,  # Centered horizontally
+                y_pos,
+                combined_legend_text,
+                ha="center",
+                fontsize=10,
+                bbox=dict(facecolor="white", alpha=0.5, boxstyle="round,pad=0.7"),
+                usetex=False,
+            )
+        else:
+            # Only show pooling strategies legend centered
+            pooling_legend_lines = pooling_legend_text.split("\n")
+            pooling_legend_lines[0] = "Pooling Strategies:"
+            pooling_legend_text = (
+                r"$\mathbf{Pooling\ Strategies:}$"
+                + "\n"
+                + "\n".join(pooling_legend_lines[1:])
+            )
+            fig.text(
+                0.5,  # Center position for the pooling strategies legend
+                y_pos,
+                pooling_legend_text,
+                ha="left",
+                fontsize=10,
+                bbox=dict(facecolor="white", alpha=0.5, boxstyle="round,pad=0.5"),
+                usetex=False,
+            )
 
     # For directional leakage, print comparison statistics
     if analysis_type == "directional_leakage" and False:
