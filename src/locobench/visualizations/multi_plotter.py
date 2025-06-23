@@ -17,17 +17,25 @@ from pathlib import Path
 from ..core.segment_embedding_analysis import (
     DocumentSegmentSimilarityAnalyzer,
     DirectionalLeakageAnalyzer,
+    PositionalDirectionalLeakageAnalyzer,
 )
 
 from .single_plotters import (
     DirectionalLeakageSinglePlotter,
     PositionSimilaritySinglePlotter,
+    PositionalDirectionalLeakageSinglePlotter,
 )
 
 
 class DirectionalLeakageMultiPlotter:
     """
     Class to handle the plotting of directional leakage analysis results in a multi plot.
+
+    NOTE: The averages computed by this plotter may differ slightly from PositionalDirectionalLeakageMultiPlotter
+    due to different averaging methodologies:
+    - This plotter: Simple mean over all pairwise similarities
+    - PositionalDirectionalLeakageMultiPlotter: Averages per-position means (equal weight per position)
+
     """
 
     def __init__(self):
@@ -223,6 +231,78 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
         )
 
 
+class PositionalDirectionalLeakageMultiPlotter:
+    """
+    Class to handle the plotting of positional directional leakage analysis results in a multi plot.
+
+    NOTE: The averages computed by this plotter may differ slightly from DirectionalLeakageMultiPlotter
+    due to different averaging methodologies:
+    - This plotter: Averages per-position means (equal weight per position)
+    - DirectionalLeakageMultiPlotter: Simple mean over all pairwise similarities
+
+    """
+
+    def __init__(self):
+        self.analysis_type = "positional_directional_leakage"
+
+    def plot(
+        self,
+        paths: List[str | Path],
+        pooling_strategy_segment_standalone: str = "mean",
+        matryoshka_dimensions: Optional[List[int]] = None,
+        show_segment_lengths: bool = False,
+        figure_width: int = 15,
+        subplot_height: int = 5,
+        save_plot: bool = False,
+        save_path: Optional[str] = None,
+        show_plot: bool = True,
+        return_full_results: bool = False,
+        single_model_mode: Optional[bool] = None,
+    ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+        """
+        Analyze and plot positional directional leakage for multiple experiments in a grid,
+        organized by model name and concat size.
+
+        Args:
+            paths: List of paths to experiment results
+            pooling_strategy_segment_standalone: Either "cls" or "mean" for standalone segment embeddings pooling
+            matryoshka_dimensions: Optional list of dimensions to truncate embeddings to for Matryoshka analysis
+            show_segment_lengths: Whether to show segment length information in titles and legends
+            figure_width: Width of the complete figure in inches
+            subplot_height: Height of each subplot in inches
+            save_plot: Whether to save the plot
+            save_path: Path to save the figure (if None and save_plot is True, saves to first path directory)
+            show_plot: Whether to display the plot
+            return_full_results: Whether to return the full analysis results
+            single_model_mode: If True, optimize layout for single model. If None, auto-detect based on data
+
+        Returns:
+            If return_full_results is True, returns a dictionary with model names as keys and
+            lists of result dictionaries as values
+        """
+        positional_directional_leakage_single_plotter = (
+            PositionalDirectionalLeakageSinglePlotter()
+        )
+
+        return analyze_and_plot_multiple_results(
+            paths=paths,
+            analysis_type=self.analysis_type,
+            title="Position-wise Directional Information Flow",
+            pooling_legend_type="segment_standalone",
+            subplotter=positional_directional_leakage_single_plotter.plot_positional_directional_leakage_in_subplot,
+            pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+            matryoshka_dimensions=matryoshka_dimensions,
+            show_segment_lengths=show_segment_lengths,
+            figure_width=figure_width,
+            subplot_height=subplot_height,
+            save_plot=save_plot,
+            save_path=save_path,
+            show_plot=show_plot,
+            return_full_results=return_full_results,
+            single_model_mode=single_model_mode,
+        )
+
+
 def analyze_and_plot_multiple_results(
     paths: List[str | Path],
     analysis_type: str = "position",  # Either "position" or "directional_leakage"
@@ -291,6 +371,12 @@ def analyze_and_plot_multiple_results(
             )
         )
         plot_in_subplot = subplotter
+    elif analysis_type == "positional_directional_leakage":
+        positional_directional_leakage_analyzer = PositionalDirectionalLeakageAnalyzer()
+        run_analysis = lambda path: positional_directional_leakage_analyzer.run_positional_directional_leakage_analysis(
+            path, pooling_strategy_segment_standalone, matryoshka_dimensions
+        )
+        plot_in_subplot = subplotter
     else:
         raise ValueError(
             f"Unknown analysis_type: {analysis_type}. Use 'position' or 'directional_leakage'."
@@ -356,7 +442,7 @@ def analyze_and_plot_multiple_results(
             key = (model_name, concat_size)
             max_variations_per_model_size[key] = len(size_results)
 
-    # Calculate global y-limits for each model (for position analysis only)
+    # Calculate global y-limits for each model (for position and positional directional leakage analysis)
     model_ylims = {}
     if analysis_type == "position":
         for model_name, results in model_groups.items():
@@ -374,6 +460,31 @@ def analyze_and_plot_multiple_results(
                 y_range = y_max - y_min
                 margin = y_range * 0.05
                 model_ylims[model_name] = (y_min - margin, y_max + margin)
+            else:
+                model_ylims[model_name] = None
+    elif analysis_type == "positional_directional_leakage":
+        for model_name, results in model_groups.items():
+            all_values = []
+            for result in results:
+                # Collect all y-values from position forward and backward means
+                all_values.extend(result["position_forward_means"].values())
+                all_values.extend(result["position_backward_means"].values())
+
+                # Also collect Matryoshka results if available
+                if "matryoshka_results" in result:
+                    for dim_results in result["matryoshka_results"].values():
+                        all_values.extend(
+                            dim_results["position_forward_means"].values()
+                        )
+                        all_values.extend(
+                            dim_results["position_backward_means"].values()
+                        )
+
+            if all_values:
+                # Add a small margin (5%) to the range and respect cosine similarity bounds [-1, 1]
+                y_min = max(min(all_values) - 0.02, -1.0)
+                y_max = min(max(all_values) + 0.02, 1.0)
+                model_ylims[model_name] = (y_min, y_max)
             else:
                 model_ylims[model_name] = None
 
@@ -550,6 +661,16 @@ def analyze_and_plot_multiple_results(
                     plot_in_subplot(
                         ax, result, show_title=True, compact=True, xlim=xlim
                     )
+                elif analysis_type == "positional_directional_leakage":
+                    ylim = model_ylims.get(model_name)
+                    plot_in_subplot(
+                        ax,
+                        result,
+                        show_title=True,
+                        compact=True,
+                        ylim=ylim,
+                        show_segment_lengths=show_segment_lengths,
+                    )
                 else:
                     plot_in_subplot(
                         ax,
@@ -627,7 +748,7 @@ def analyze_and_plot_multiple_results(
                 fontweight="bold",
                 y=y_title,
             )
-        elif analysis_type == "directional_leakage":
+        elif analysis_type in ("directional_leakage", "positional_directional_leakage"):
             # Include model name in the title for single model
             title_with_model = f"{title} - {single_model_name}"
             fig.suptitle(
@@ -663,7 +784,7 @@ def analyze_and_plot_multiple_results(
                 fontweight="bold",
                 y=y_title,
             )
-        elif analysis_type == "directional_leakage":
+        elif analysis_type in ("directional_leakage", "positional_directional_leakage"):
             # Directional leakage title
             fig.suptitle(
                 title,
@@ -673,7 +794,7 @@ def analyze_and_plot_multiple_results(
             )
 
         # Add legend explaining directional leakage
-        if analysis_type == "directional_leakage":
+        if analysis_type in ("directional_leakage", "positional_directional_leakage"):
             subtitle_text = (
                 "Forward Similarity (F): Earlier segments' standalone embeddings ↔ Later segments' contextualized embeddings\n"
                 "Backward Similarity (B): Later segments' standalone embeddings ↔ Earlier segments' contextualized embeddings"
@@ -705,7 +826,7 @@ def analyze_and_plot_multiple_results(
             marker="o",
             linestyle="-",
             linewidth=2,
-            label="Full",
+            label="Full Embedding",
         )
         handles.append(mean_line)
 
@@ -731,7 +852,7 @@ def analyze_and_plot_multiple_results(
                     marker="o",
                     linestyle="--" if i >= 4 else "-",
                     linewidth=2,
-                    label=f"D{dim}",
+                    label=f"Matryoshka D{dim}",
                 )
                 handles.append(mat_line)
 
@@ -754,7 +875,78 @@ def analyze_and_plot_multiple_results(
             columnspacing=2.0,
             handletextpad=1.2,
         )
-    else:
+    elif analysis_type == "positional_directional_leakage":
+        # Position analysis legend - check if Matryoshka dimensions are present
+        handles = []
+        labels = []
+
+        forward_line = mlines.Line2D(
+            [],
+            [],
+            color="blue",
+            marker="o",
+            linestyle="-",
+            linewidth=2,
+            label="Forward Similarity",
+        )
+        backward_line = mlines.Line2D(
+            [],
+            [],
+            color="orange",
+            marker="o",
+            linestyle="-",
+            linewidth=2,
+            label="Backward Similarity",
+        )
+        handles.append(forward_line)
+        handles.append(backward_line)
+
+        # Add Matryoshka dimensions if present (check first result for Matryoshka data)
+        has_matryoshka = any("matryoshka_results" in result for result in all_results)
+        if has_matryoshka and matryoshka_dimensions:
+            colors = [
+                "red",
+                "green",
+                "orange",
+                "purple",
+                "brown",
+                "pink",
+                "gray",
+                "olive",
+            ]
+            for i, dim in enumerate(matryoshka_dimensions):
+                color = colors[i % len(colors)]
+                mat_line = mlines.Line2D(
+                    [],
+                    [],
+                    color=color,
+                    marker="o",
+                    linestyle="--" if i >= 4 else "-",
+                    linewidth=2,
+                    label=f"Matryoshka D{dim}",
+                )
+                handles.append(mat_line)
+
+        # Add confidence interval patch
+        # ci_patch = mpatches.Patch(
+        #     color="blue", alpha=0.2, label="95% Confidence Interval"
+        # )
+        # handles.append(ci_patch)
+
+        # Determine number of columns based on number of handles
+        ncol = min(len(handles), 6)  # Maximum 6 columns to avoid overcrowding
+
+        fig.legend(
+            handles=handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, legend_y),
+            ncol=ncol,
+            fontsize=9,
+            frameon=False,
+            columnspacing=2.0,
+            handletextpad=1.2,
+        )
+    elif analysis_type == "directional_leakage":
         # Directional leakage legend
         blue_patch = mpatches.Patch(color="blue", alpha=0.6, label="Forward Similarity")
         orange_patch = mpatches.Patch(

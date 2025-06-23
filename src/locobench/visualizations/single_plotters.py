@@ -4,11 +4,13 @@ from typing import Dict, List, Tuple, Set, Any, Optional
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 from pathlib import Path
+import numpy as np
 
 # Import the required analyses functions
 from ..core.segment_embedding_analysis import (
     DocumentSegmentSimilarityAnalyzer,
     DirectionalLeakageAnalyzer,
+    PositionalDirectionalLeakageAnalyzer,
 )
 
 
@@ -706,3 +708,213 @@ class DirectionalLeakageSinglePlotter:
             min_val = max(min(all_values) - 0.01, -1.0)  # Cosine sim range is [-1, 1]
             max_val = min(max(all_values) + 0.01, 1.0)
             ax.set_xlim(min_val, max_val)
+
+
+class PositionalDirectionalLeakageSinglePlotter:
+    """
+    Class for plotting positional directional leakage results in a single plot.
+    """
+
+    def __init__(self):
+        pass
+
+    def plot_positional_directional_leakage_in_subplot(
+        self,
+        ax: plt.Axes,
+        results: Dict[str, Any],
+        show_title: bool = True,
+        compact: bool = True,
+        ylim: Optional[Tuple[float, float]] = None,
+        show_segment_lengths: bool = False,
+    ) -> None:
+        """
+        Plot positional directional leakage results in a given subplot.
+
+        Args:
+            ax: Matplotlib Axes object to plot on
+            results: Dictionary returned from run_positional_directional_leakage_analysis()
+            show_title: Whether to show the title (default: True)
+            compact: Whether to use a compact plot style for multi-plot figures (default: True)
+            ylim: Optional tuple specifying (min, max) y-axis limits
+            show_segment_lengths: Whether to show segment length information in title and legends (default: True)
+        """
+        # Extract data from results
+        position_forward_means = results["position_forward_means"]
+        position_backward_means = results["position_backward_means"]
+        all_positions = results["all_positions"]
+
+        # Convert to lists for plotting, ensuring 1-based indexing
+        positions = list(range(1, len(all_positions) + 1))
+        forward_means = [position_forward_means.get(pos, 0) for pos in all_positions]
+        backward_means = [
+            position_backward_means.get(pos, 0) for pos in all_positions
+        ]  # Plot forward influence (excluding last position which is always 0)
+        forward_positions = positions[:-1] if len(positions) > 1 else positions
+        forward_values = forward_means[:-1] if len(forward_means) > 1 else forward_means
+
+        if forward_positions:
+            ax.plot(
+                forward_positions,
+                forward_values,
+                "o",
+                color="blue",
+                linewidth=2,
+                linestyle="-",
+                # label="Forward",
+                markersize=5,
+            )
+
+        # Plot backward influence (excluding first position which is always 0)
+        backward_positions = positions[1:] if len(positions) > 1 else []
+        backward_values = backward_means[1:] if len(backward_means) > 1 else []
+
+        if backward_positions:
+            ax.plot(
+                backward_positions,
+                backward_values,
+                "o",
+                color="orange",
+                linewidth=2,
+                linestyle="-",
+                # label="Backward",
+                markersize=5,
+            )
+
+        # Plot Matryoshka dimensions if available
+        if "matryoshka_results" in results and "matryoshka_dimensions" in results:
+            colors = [
+                "red",
+                "green",
+                "purple",
+                "brown",
+                "pink",
+                "gray",
+                "olive",
+            ]
+            matryoshka_results = results["matryoshka_results"]
+            matryoshka_dimensions = results["matryoshka_dimensions"]
+
+            for i, dim in enumerate(matryoshka_dimensions):
+                if dim in matryoshka_results:
+                    color = colors[i % len(colors)]
+                    dim_forward_means = matryoshka_results[dim][
+                        "position_forward_means"
+                    ]
+                    dim_backward_means = matryoshka_results[dim][
+                        "position_backward_means"
+                    ]
+
+                    # Convert to lists for plotting
+                    dim_forward_values = [
+                        dim_forward_means.get(pos, 0) for pos in all_positions
+                    ]
+                    dim_backward_values = [
+                        dim_backward_means.get(pos, 0) for pos in all_positions
+                    ]
+
+                    # Plot forward influence for this dimension (excluding last position)
+                    dim_forward_positions = forward_positions
+                    dim_forward_vals = (
+                        dim_forward_values[:-1]
+                        if len(dim_forward_values) > 1
+                        else dim_forward_values
+                    )
+
+                    if dim_forward_positions:
+                        ax.plot(
+                            dim_forward_positions,
+                            dim_forward_vals,
+                            "o",
+                            color=color,
+                            linewidth=2,
+                            label=f"F D{dim}",
+                            linestyle="--",
+                            markersize=4,
+                        )
+
+                    # Plot backward influence for this dimension (excluding first position)
+                    dim_backward_positions = backward_positions
+                    dim_backward_vals = (
+                        dim_backward_values[1:] if len(dim_backward_values) > 1 else []
+                    )
+
+                    if dim_backward_positions:
+                        ax.plot(
+                            dim_backward_positions,
+                            dim_backward_vals,
+                            "s",
+                            color=color,
+                            linewidth=2,
+                            label=f"B D{dim}",
+                            linestyle=":",
+                            markersize=4,
+                        )
+
+        # Add average lines (excluding zeros)
+        # Calculate average forward influence (excluding last position which is 0)
+        if forward_values:
+            forward_avg = np.mean(forward_values)
+            ax.axhline(
+                y=forward_avg, color="blue", linestyle="--", alpha=0.7, linewidth=1
+            )
+
+        # Calculate average backward influence (excluding first position which is 0)
+        if backward_values:
+            backward_avg = np.mean(backward_values)
+            ax.axhline(
+                y=backward_avg, color="orange", linestyle="--", alpha=0.7, linewidth=1
+            )
+
+        # Add labels
+        ax.set_xlabel("Position")
+        ax.set_ylabel("Cosine Similarity")
+
+        # Set y-axis limits if provided
+        if ylim:
+            ax.set_ylim(ylim)
+
+        # Add legend (compact for subplots)
+        if compact:
+            ax.legend(loc="best", fontsize="small")
+        else:
+            ax.legend(loc="best")
+
+        # Extract range ID if available
+        range_id = results.get("range_id", "N/A")
+
+        # Use abbreviated model name if available
+        model_name = results.get(
+            "abbreviated_model_name", results.get("model_name", "Unknown model")
+        )
+
+        if show_title:
+            current_title = ax.get_title()
+
+            # Get language information if available
+            source_lang = results.get("source_lang")
+            target_lang = results.get("target_lang")
+
+            # Add language information if available
+            if target_lang and source_lang:
+                title_text = (
+                    f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                )
+            elif source_lang:
+                title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+            else:
+                title_text = "Position-wise Directional Influence"
+
+            if show_segment_lengths:
+                # Add range information as subtitle
+                title_text += f"; SL:: {range_id}"
+
+            if current_title:
+                ax.set_title(f"{current_title}\n{title_text}", fontsize=9)
+            else:
+                ax.set_title(title_text, fontsize=9)
+
+        # Set integer x-axis ticks
+        ax.set_xticks(positions)
+
+        # Grid for better readability
+        ax.grid(True, alpha=0.3)

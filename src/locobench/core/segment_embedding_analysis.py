@@ -582,6 +582,14 @@ class DocumentSegmentSimilarityAnalyzer:
 class DirectionalLeakageAnalyzer:
     """
     Class to analyze directional similarity between segments in the same document.
+
+    NOTE: This analyzer computes a simple mean over ALL pairwise similarities.
+    This differs from PositionalDirectionalLeakageAnalyzer which computes means
+    per position then averages those means (equal weight per position).
+
+    The two approaches answer slightly different questions:
+    - DirectionalLeakageAnalyzer: "What is the average pairwise similarity?"
+    - PositionalDirectionalLeakageAnalyzer: "What is the average per-position influence?"
     """
 
     def __init__(self):
@@ -692,6 +700,275 @@ class DirectionalLeakageAnalyzer:
         leakage_results["t_stat"] = t_stat
         leakage_results["p_value"] = p_value
         leakage_results["significant"] = p_value < 0.05
+
+        # Add experiment metadata from exp_info
+        leakage_results["model_name"] = exp_info.get("model_name", "Unknown model name")
+        leakage_results["concat_size"] = exp_info.get("concat_size", 0)
+        leakage_results["position_specific_ranges"] = (
+            exp_info["position_specific_ranges"]
+            if exp_info["position_specific_ranges"] != []
+            else ([exp_info["source_segment_range"]] * exp_info["concat_size"])
+        )
+
+        # Add language information if available
+        if "source_lang" in exp_info and exp_info["source_lang"]:
+            leakage_results["source_lang"] = exp_info["source_lang"]
+        if "target_lang" in exp_info and exp_info["target_lang"]:
+            leakage_results["target_lang"] = exp_info["target_lang"]
+
+        # Extract path name for display
+        path_str = str(path)
+        if "results/runs/" in path_str:
+            path_name = path_str.split("results/runs/")[1]
+            leakage_results["path_name"] = path_name
+        else:
+            leakage_results["path_name"] = path_str
+
+        return leakage_results
+
+
+class PositionalDirectionalLeakageAnalyzer:
+    """
+    Class to analyze position-specific directional similarity between segments.
+    For each position, calculates average forward and backward influence.
+
+    NOTE: This analyzer computes means per position then averages those means.
+    This differs from DirectionalLeakageAnalyzer which computes a simple mean
+    over ALL pairwise similarities (weighting positions by number of comparisons).
+
+    The two approaches answer slightly different questions:
+    - PositionalDirectionalLeakageAnalyzer: "What is the average per-position influence?"
+    - DirectionalLeakageAnalyzer: "What is the average pairwise similarity?"
+
+    """
+
+    def __init__(self):
+        pass
+
+    def positional_directional_leakage(
+        self,
+        docID_pos_to_emb: Dict[Tuple[str, int], torch.Tensor],
+        docID_pos_to_segID: Dict[Tuple[str, int], str],
+        segID_to_emb: Dict[str, torch.Tensor],
+        matryoshka_dimensions: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Calculate position-specific directional leakage between segments.
+
+        Args:
+            docID_pos_to_emb: Dict mapping (doc_id, position) to contextualized embeddings
+            docID_pos_to_segID: Dict mapping (doc_id, position) to segment_id
+            segID_to_emb: Dict mapping segment_id to standalone segment embeddings
+            matryoshka_dimensions: Optional list of dimensions for Matryoshka analysis
+
+        Returns:
+            Dict containing position-specific forward and backward influence measures
+        """
+        # Group by document
+        doc_positions = defaultdict(dict)
+        for (doc_id, pos), emb in docID_pos_to_emb.items():
+            segment_id = docID_pos_to_segID.get((doc_id, pos))
+            if segment_id and segment_id in segID_to_emb:
+                doc_positions[doc_id][pos] = {
+                    "latechunk": emb,
+                    "segment_id": segment_id,
+                    "standalone": segID_to_emb[segment_id],
+                }
+
+        # Initialize position-specific lists
+        position_forward_influence = defaultdict(
+            list
+        )  # position -> list of forward influences
+        position_backward_influence = defaultdict(
+            list
+        )  # position -> list of backward influences
+
+        # Calculate influence for each document
+        all_possible_positions = set()  # Track all positions across all documents
+        for doc_id, pos_data in doc_positions.items():
+            if len(pos_data) < 2:
+                continue
+
+            positions = sorted(pos_data.keys())
+            all_possible_positions.update(
+                positions
+            )  # Add all positions from this document
+
+            # For each position, calculate its forward and backward influences
+            for i, current_pos in enumerate(positions):
+                # Forward influence: current position's standalone affects later positions' contextualized
+                forward_influences = []
+                for j in range(i + 1, len(positions)):
+                    later_pos = positions[j]
+                    forward_influence = F.cosine_similarity(
+                        pos_data[current_pos]["standalone"],
+                        pos_data[later_pos]["latechunk"],
+                        dim=0,
+                    )
+                    forward_influences.append(forward_influence.item())
+
+                if forward_influences:
+                    position_forward_influence[current_pos].extend(forward_influences)
+
+                # Backward influence: current position's standalone affects earlier positions' contextualized
+                backward_influences = []
+                for j in range(0, i):  # Look at all earlier positions
+                    earlier_pos = positions[j]
+                    backward_influence = F.cosine_similarity(
+                        pos_data[current_pos]["standalone"],
+                        pos_data[earlier_pos]["latechunk"],
+                        dim=0,
+                    )
+                    backward_influences.append(backward_influence.item())
+
+                if backward_influences:
+                    position_backward_influence[current_pos].extend(backward_influences)
+
+        # Calculate means for each position using ALL possible positions
+        all_positions = sorted(all_possible_positions)
+        position_forward_means = {}
+        position_backward_means = {}
+
+        for pos in all_positions:
+            forward_values = position_forward_influence.get(pos, [])
+            backward_values = position_backward_influence.get(pos, [])
+
+            position_forward_means[pos] = (
+                np.mean(forward_values) if forward_values else 0
+            )
+            position_backward_means[pos] = (
+                np.mean(backward_values) if backward_values else 0
+            )
+
+        results = {
+            "position_forward_influence": dict(position_forward_influence),
+            "position_backward_influence": dict(position_backward_influence),
+            "position_forward_means": position_forward_means,
+            "position_backward_means": position_backward_means,
+            "all_positions": all_positions,
+        }
+
+        # Handle Matryoshka dimensions if provided
+        if matryoshka_dimensions:
+            matryoshka_results = {}
+            for dim in matryoshka_dimensions:
+                # Truncate embeddings and recalculate
+                truncated_doc_positions = defaultdict(dict)
+                for doc_id, pos_data in doc_positions.items():
+                    for pos, data in pos_data.items():
+                        truncated_doc_positions[doc_id][pos] = {
+                            "latechunk": data["latechunk"][:dim],
+                            "segment_id": data["segment_id"],
+                            "standalone": data["standalone"][:dim],
+                        }
+
+                # Recalculate with truncated embeddings
+                dim_position_forward_influence = defaultdict(list)
+                dim_position_backward_influence = defaultdict(list)
+
+                for doc_id, pos_data in truncated_doc_positions.items():
+                    if len(pos_data) < 2:
+                        continue
+
+                    positions = sorted(pos_data.keys())
+
+                    for i, current_pos in enumerate(positions):
+                        # Forward influence
+                        forward_influences = []
+                        for j in range(i + 1, len(positions)):
+                            later_pos = positions[j]
+                            forward_influence = F.cosine_similarity(
+                                pos_data[current_pos]["standalone"],
+                                pos_data[later_pos]["latechunk"],
+                                dim=0,
+                            )
+                            forward_influences.append(forward_influence.item())
+
+                        if forward_influences:
+                            dim_position_forward_influence[current_pos].extend(
+                                forward_influences
+                            )
+
+                        # Backward influence: current position's standalone affects earlier positions' contextualized
+                        backward_influences = []
+                        for j in range(0, i):  # Look at all earlier positions
+                            earlier_pos = positions[j]
+                            backward_influence = F.cosine_similarity(
+                                pos_data[current_pos]["standalone"],
+                                pos_data[earlier_pos]["latechunk"],
+                                dim=0,
+                            )
+                            backward_influences.append(backward_influence.item())
+
+                        if backward_influences:
+                            dim_position_backward_influence[current_pos].extend(
+                                backward_influences
+                            )
+
+                # Calculate means for this dimension
+                dim_position_forward_means = {}
+                dim_position_backward_means = {}
+
+                for pos in all_positions:
+                    forward_values = dim_position_forward_influence.get(pos, [])
+                    backward_values = dim_position_backward_influence.get(pos, [])
+
+                    dim_position_forward_means[pos] = (
+                        np.mean(forward_values) if forward_values else 0
+                    )
+                    dim_position_backward_means[pos] = (
+                        np.mean(backward_values) if backward_values else 0
+                    )
+
+                matryoshka_results[dim] = {
+                    "position_forward_influence": dict(dim_position_forward_influence),
+                    "position_backward_influence": dict(
+                        dim_position_backward_influence
+                    ),
+                    "position_forward_means": dim_position_forward_means,
+                    "position_backward_means": dim_position_backward_means,
+                    "all_positions": all_positions,
+                }
+
+            results["matryoshka_results"] = matryoshka_results
+            results["matryoshka_dimensions"] = matryoshka_dimensions
+
+        return results
+
+    def run_positional_directional_leakage_analysis(
+        self,
+        path: str | Path,
+        pooling_strategy_segment_standalone: str = "mean",
+        matryoshka_dimensions: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run positional directional leakage analysis for a single experiment.
+
+        Args:
+            path: Path to experiment results
+            pooling_strategy_segment_standalone: Pooling strategy for standalone embeddings
+            matryoshka_dimensions: Optional list of dimensions for Matryoshka analysis
+
+        Returns:
+            Dict containing positional directional leakage results and experiment metadata
+        """
+        # Load experiment info
+        exp_info = load_exp_info(path)
+
+        # Load and process embeddings
+        embedding_data = load_and_process_embeddings(
+            path=path,
+            pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+            pooling_strategy_document="cls",  # irrelevant / not used for leakage analysis
+        )
+
+        # Calculate positional directional leakage
+        leakage_results = self.positional_directional_leakage(
+            docID_pos_to_emb=embedding_data["docID_pos_to_emb"],
+            docID_pos_to_segID=embedding_data["docID_pos_to_segID"],
+            segID_to_emb=embedding_data["segID_to_emb"],
+            matryoshka_dimensions=matryoshka_dimensions,
+        )
 
         # Add experiment metadata from exp_info
         leakage_results["model_name"] = exp_info.get("model_name", "Unknown model name")
