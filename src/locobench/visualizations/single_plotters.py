@@ -109,7 +109,7 @@ class PositionSimilaritySinglePlotter:
         ax.set_xticks(positions)
 
         # Format y-axis to show at most 3 decimal places
-        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
 
         # Add grid for better readability
         ax.grid(True, linestyle="--", alpha=0.7)
@@ -371,7 +371,7 @@ class PositionSimilaritySinglePlotter:
             ax.set_ylim(ylim)
 
         # Format y-axis to show at most 3 decimal places
-        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
 
         # Add grid for better readability
         ax.grid(True, linestyle="--", alpha=0.7)
