@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModel
 from typing import List, Dict, Union, Literal, Optional, Any, Tuple
 import tqdm
+import importlib.util
 
 DEVICE = (
     "cuda"
@@ -49,9 +50,28 @@ class BaseEmbedder:
         else:
             self.device = device
 
-        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(
-            self.device
-        )
+        # Check if xformers is available for memory-efficient attention
+        spec = importlib.util.find_spec("xformers")
+        if spec is None:
+            print("Warning: xformers not found.")
+            xformers_available = False
+        else:
+            xformers_available = True
+
+        if model_name == "Alibaba-NLP/gte-multilingual-base" and xformers_available:
+            print("Loading Alibaba-NLP/gte-multilingual-base with xformers support")
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                unpad_inputs=True,
+                use_memory_efficient_attention=True,
+                torch_dtype=torch.float16,
+            ).to(self.device)
+        else:
+            self.model = AutoModel.from_pretrained(
+                model_name, trust_remote_code=True
+            ).to(self.device)
+
         self.model.eval()
         self.normalize = normalize
         self.model_name = model_name
