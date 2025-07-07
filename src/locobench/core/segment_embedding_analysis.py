@@ -994,3 +994,138 @@ class PositionalDirectionalLeakageAnalyzer:
             leakage_results["path_name"] = path_str
 
         return leakage_results
+
+
+def compute_position_token_lengths(
+    paths: List[str | Path],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Compute average token lengths by position for given experiment instances.
+
+    Args:
+        paths: List of paths to experiment directories, each containing an embedding_config.json
+
+    Returns:
+        Dict with experiment paths as keys and position statistics as values:
+        {
+            "path1": {
+                "position_means": [avg_len_pos0, avg_len_pos1, ...],
+                "position_stds": [std_len_pos0, std_len_pos1, ...],
+                "position_counts": [count_pos0, count_pos1, ...],
+                "position_lengths": [[lengths_pos0], [lengths_pos1], ...],
+                "concat_size": int,
+                "exp_info": dict  # experiment metadata
+            },
+            ...
+        }
+    """
+    results = {}
+
+    for path in paths:
+        path_obj = Path(path)
+        config_path = path_obj / "embedding_config.json"
+
+        if not config_path.exists():
+            print(f"Warning: No embedding_config.json found in {path}")
+            continue
+
+        try:
+            # Load experiment config
+            with open(config_path, "r") as f:
+                config = json.load(f)
+
+            concat_size = config.get("concat_size", 0)
+            concat_indices = config.get("concat_indices", [])
+            dataset_dir = config.get("dataset_dir", "")
+
+            if not concat_indices or not dataset_dir:
+                print(f"Warning: Missing concat_indices or dataset_dir in {path}")
+                continue
+
+            # Initialize position-wise length collections
+            position_lengths = [[] for _ in range(concat_size)]
+
+            # Load metadata for all languages
+            metadata_cache = {}
+
+            def get_metadata_for_lang(lang: str) -> Dict[str, Any]:
+                """Cache and return metadata for a specific language"""
+                if lang not in metadata_cache:
+                    metadata_path = Path(dataset_dir) / lang / "metadata.json"
+                    if metadata_path.exists():
+                        with open(metadata_path, "r") as f:
+                            metadata_cache[lang] = json.load(f)
+                    else:
+                        print(
+                            f"Warning: No metadata.json found for language {lang} in {dataset_dir}"
+                        )
+                        metadata_cache[lang] = {}
+                return metadata_cache[lang]
+
+            # Process each sample in concat_indices
+            for sample in concat_indices:
+                if len(sample) != concat_size:
+                    print(
+                        f"Warning: Sample {sample} has length {len(sample)}, expected {concat_size}"
+                    )
+                    continue
+
+                # For each position in the sample
+                for pos, segment_id in enumerate(sample):
+                    # Extract language from segment_id (last 2 characters)
+                    if len(segment_id) < 2:
+                        print(f"Warning: Invalid segment_id format: {segment_id}")
+                        continue
+
+                    lang = segment_id[-2:]
+
+                    # Get metadata for this language
+                    lang_metadata = get_metadata_for_lang(lang)
+
+                    # Get token length for this segment
+                    if segment_id in lang_metadata:
+                        token_length = lang_metadata[segment_id].get(
+                            "token_length", None
+                        )
+                        if token_length is not None:
+                            position_lengths[pos].append(token_length)
+                        else:
+                            print(f"Warning: No token_length for {segment_id}")
+                    else:
+                        print(
+                            f"Warning: Segment {segment_id} not found in {lang} metadata"
+                        )
+
+            # Compute statistics for each position
+            position_means = []
+            position_stds = []
+            position_counts = []
+
+            for pos in range(concat_size):
+                lengths = position_lengths[pos]
+                if lengths:
+                    position_means.append(np.mean(lengths))
+                    position_stds.append(np.std(lengths))
+                    position_counts.append(len(lengths))
+                else:
+                    position_means.append(0.0)
+                    position_stds.append(0.0)
+                    position_counts.append(0)
+
+            # Get experiment info
+            exp_info = load_exp_info(path)
+
+            results[str(path)] = {
+                "position_means": position_means,
+                "position_stds": position_stds,
+                "position_counts": position_counts,
+                "position_lengths": position_lengths,
+                "concat_size": concat_size,
+                "exp_info": exp_info,
+            }
+
+        except Exception as e:
+            print(f"Error processing {path}: {e}")
+            continue
+
+    return results
