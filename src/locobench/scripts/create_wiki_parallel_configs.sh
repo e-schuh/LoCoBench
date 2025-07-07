@@ -42,11 +42,11 @@ BATCH_SIZE_CONCAT="${7:-2}"
 case "$MODEL" in
     "mgte")
         MODEL_NAME="Alibaba-NLP/gte-multilingual-base"
-        TOKENIZED_DATASET_PATH="data/wiki_parallel_en_de_hi_it_ko/tokenized__Alibaba-NLP_gte-multilingual-base"
+        TOKENIZED_DATASET_PATH="data/wiki_parallel_en_de_hi_it_ko_zh/tokenized__Alibaba-NLP_gte-multilingual-base"
         ;;
     "jina")
         MODEL_NAME="jinaai/jina-embeddings-v3"
-        TOKENIZED_DATASET_PATH="data/wiki_parallel_en_de_hi_it_ko/tokenized__jinaai_jina-embeddings-v3"
+        TOKENIZED_DATASET_PATH="data/wiki_parallel_en_de_hi_it_ko_zh/tokenized__jinaai_jina-embeddings-v3"
         ;;
     *)
         echo "Error: Invalid model '$MODEL'. Must be 'mgte' or 'jina'"
@@ -82,7 +82,7 @@ create_config() {
 {
     "model_name": "$MODEL_NAME",
     "tokenized_dataset_path": "$TOKENIZED_DATASET_PATH",
-    "indices_path": "config/wiki_parallel/indices_wiki_parallel_${EXPERIMENT_NUMBER}_en_de_hi_it_ko.json",
+    "indices_path": "config/wiki_parallel/indices_wiki_parallel_${EXPERIMENT_NUMBER}_en_de_hi_it_ko_zh.json",
     "mode": "wiki_parallel",
     "source_lang": "$source_lang",$(if [ -n "$target_lang" ]; then echo "
     \"target_lang\": \"$target_lang\","; fi)

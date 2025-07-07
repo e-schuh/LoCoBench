@@ -53,12 +53,12 @@ Ensure that in the file `custom_data_collator.py`, the `CustomDataCollator` clas
 
 
 ## Creating Multilingual Wikipedia Dataset
-To create a multilingual Wikipedia dataset, we make use of the existing `wikipedia-parallel-titles` tool which does the title matching. Follow these steps:
+To create a multilingual Wikipedia dataset, we make use of the existing `wikipedia-parallel-titles` tool from https://github.com/clab/wikipedia-parallel-titles which does the title matching. Follow these steps:
 1. Run the shell script `download_wikipedia_parallel_titles.sh` with the following paramters:
 - version: the version of the Wikipedia dump to use (e.g., 20250601)
 - languages: a list of languages (other than English) (e.g., de it hi ko)
 ```bash
-sh src/locobench/utils/parallel_wiki/download_wikipedia_parallel_titles.sh 20250601 de it hi ko
+sh src/locobench/utils/parallel_wiki/download_wikipedia_parallel_titles.sh 20250601 de it hi ko zh zu
 ```
 
 2. For each downloaded language, run the post-processing script
@@ -68,27 +68,29 @@ poetry run python src/locobench/utils/parallel_wiki/process_wikipedia_titles.py 
 poetry run python src/locobench/utils/parallel_wiki/process_wikipedia_titles.py data/_wiki_parallel_titles/it_titles.txt
 poetry run python src/locobench/utils/parallel_wiki/process_wikipedia_titles.py data/_wiki_parallel_titles/hi_titles.txt
 poetry run python src/locobench/utils/parallel_wiki/process_wikipedia_titles.py data/_wiki_parallel_titles/ko_titles.txt
+poetry run python src/locobench/utils/parallel_wiki/process_wikipedia_titles.py data/_wiki_parallel_titles/zh_titles.txt
+poetry run python src/locobench/utils/parallel_wiki/process_wikipedia_titles.py data/_wiki_parallel_titles/zu_titles.txt
 ```
 3. Create txt file with matching titles:
 ```bash
-poetry run python src/locobench/utils/parallel_wiki/create_parallel_titles.py data/_wiki_parallel_titles/de_titles_processed.txt data/_wiki_parallel_titles/it_titles_processed.txt data/_wiki_parallel_titles/ko_titles_processed.txt data/_wiki_parallel_titles/hi_titles_processed.txt --output_dir data/_wiki_parallel_titles/parallel_matches
+poetry run python src/locobench/utils/parallel_wiki/create_parallel_titles.py data/_wiki_parallel_titles/de_titles_processed.txt data/_wiki_parallel_titles/it_titles_processed.txt data/_wiki_parallel_titles/ko_titles_processed.txt data/_wiki_parallel_titles/hi_titles_processed.txt data/_wiki_parallel_titles/zh_titles_processed.txt data/_wiki_parallel_titles/zu_titles_processed.txt --output_dir data/_wiki_parallel_titles/parallel_matches
 ```
 
 4. Create txt file with matching ids:
 ```bash
-poetry run python src/locobench/utils/parallel_wiki/title_to_pageid.py data/_wiki_parallel_titles/parallel_matches/parallel_titles_en_de_hi_it_ko.txt
+poetry run python src/locobench/utils/parallel_wiki/title_to_pageid.py data/_wiki_parallel_titles/parallel_matches/parallel_titles_en_de_hi_it_ko_zh_zu.txt
 ```
 
 5. Download articles from the Wikipedia dump using the generated ids:
 ```bash
-poetry run python src/locobench/utils/parallel_wiki/download_parallel_articles.py data/_wiki_parallel_titles/parallel_matches/parallel_ids_en_de_hi_it_ko.txt 
+poetry run python src/locobench/utils/parallel_wiki/download_parallel_articles.py data/_wiki_parallel_titles/parallel_matches/parallel_ids_en_de_hi_it_ko_zh_zu.txt 
 
-poetry run python src/locobench/utils/parallel_wiki/download_parallel_articles_title_match.py data/_wiki_parallel_titles/parallel_matches/parallel_titles_en_de_hi_it_ko.txt --languages en
+poetry run python src/locobench/utils/parallel_wiki/download_parallel_articles_title_match.py data/_wiki_parallel_titles/parallel_matches/parallel_titles_en_de_hi_it_ko_zh_zu.txt --languages en de hi it ko zh zu
 ```
 
 6. Unify the datasets:
 ```bash
-poetry run python src/locobench/utils/parallel_wiki/unify_parallel_datasets.py --dataset1 data/_wiki_parallel_titles/parallel_matches/parallel_articles_en_de_hi_it_ko.parquet --dataset2 data/_wiki_parallel_titles/parallel_matches/parallel_articles_titleMatch_en.parquet --parallel_ids data/_wiki_parallel_titles/parallel_matches/parallel_ids_en_de_hi_it_ko.txt
+poetry run python src/locobench/utils/parallel_wiki/unify_parallel_datasets.py --dataset1 data/_wiki_parallel_titles/parallel_matches/parallel_articles_en_de_hi_it_ko_zh_zu.parquet --dataset2 data/_wiki_parallel_titles/parallel_matches/parallel_articles_titleMatch_de_en_hi_it_ko_zh_zu.parquet --parallel_ids data/_wiki_parallel_titles/parallel_matches/parallel_ids_en_de_hi_it_ko_zh_zu.txt
 ```
 
 7. Tokenize the dataset:
@@ -106,6 +108,7 @@ poetry run python src/locobench/scripts/compute_embeddings.py --config config/em
 ```
 
 ### Script to create config files
+Remmember to adjust the paths in the script (2x TOKENIZED_DATASET_PATH and 1x indices_path)
 ```bash
 ./src/locobench/scripts/create_wiki_parallel_configs.sh config/JinaAi_jina-v3/wiki_parallel jina 5 en,de en,de,ko,it,hi 32 8
 ```
