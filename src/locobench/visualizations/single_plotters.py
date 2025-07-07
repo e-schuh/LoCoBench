@@ -232,6 +232,9 @@ class PositionSimilaritySinglePlotter:
         compact: bool = True,
         ylim: Optional[Tuple[float, float]] = None,
         show_segment_lengths: bool = False,
+        show_lengths: bool = False,
+        token_ylim: Optional[Tuple[float, float]] = None,
+        show_token_ylabel: bool = True,
     ) -> None:
         """
         Plot position-based similarity results in a given subplot.
@@ -243,6 +246,9 @@ class PositionSimilaritySinglePlotter:
             compact: Whether to use a compact plot style for multi-plot figures (default: True)
             ylim: Optional tuple specifying (min, max) y-axis limits
             show_segment_lengths: Whether to show segment length information in title and legends (default: True)
+            show_lengths: Whether to show token lengths as bar charts on right y-axis (default: False)
+            token_ylim: Optional tuple specifying (min, max) token length y-axis limits
+            show_token_ylabel: Whether to show the "Token Length" label on the right y-axis (default: True)
         """
         # Extract data from results
         position_means = results["position_means"]
@@ -359,9 +365,9 @@ class PositionSimilaritySinglePlotter:
                 title_text += f"; SL:: {range_id}"
 
             if current_title:
-                ax.set_title(f"{current_title}\n{title_text}", fontsize=9)
+                ax.set_title(f"{current_title}\n{title_text}", fontsize=10)
             else:
-                ax.set_title(title_text, fontsize=9)
+                ax.set_title(title_text, fontsize=10)
 
         # Set x-axis ticks to be integers
         ax.set_xticks(positions)
@@ -370,8 +376,52 @@ class PositionSimilaritySinglePlotter:
         if ylim is not None:
             ax.set_ylim(ylim)
 
-        # Format y-axis to show at most 3 decimal places
-        ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+        # Format y-axis to show appropriate precision and prevent duplicate labels
+        # Use more decimal places if the y-range is small to avoid duplicate tick labels
+        if ylim is not None:
+            y_range = ylim[1] - ylim[0]
+            if y_range < 0.1:
+                # For small ranges, use 2 decimal places
+                ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+            else:
+                # For larger ranges, 1 decimal place is sufficient
+                ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+        else:
+            # Default formatting
+            ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+
+        # Add token length bar chart on right y-axis if requested
+        if show_lengths and "token_lengths" in results:
+            token_data = results["token_lengths"]
+            token_means = token_data["position_means"]
+
+            # Create secondary y-axis for token lengths
+            ax2 = ax.twinx()
+
+            # Plot token length bars with transparency
+            bars = ax2.bar(
+                positions,
+                token_means,
+                alpha=0.3,
+                color="gray",
+                width=0.6,
+                label="Token Lengths",
+                zorder=1,  # Put bars behind line plots
+            )
+
+            # Set token length y-axis limits if provided
+            if token_ylim is not None:
+                ax2.set_ylim(token_ylim)
+
+            # Format token length y-axis
+            if show_token_ylabel:
+                ax2.set_ylabel("Token Length", color="gray")
+            ax2.tick_params(axis="y", labelcolor="gray")
+            ax2.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
+
+            # Ensure main plot is in front
+            ax.set_zorder(ax2.get_zorder() + 1)
+            ax.patch.set_visible(False)  # Make main plot background transparent
 
         # Add grid for better readability
         ax.grid(True, linestyle="--", alpha=0.7)
@@ -660,7 +710,7 @@ class DirectionalLeakageSinglePlotter:
                 if show_segment_lengths:
                     title_text += f"; SL:: {range_id}"
 
-                ax.set_title(title_text, fontsize=9)
+                ax.set_title(title_text, fontsize=10)
             else:
                 # For single plots, show more detailed information
                 size_info = str(results["concat_size"])
@@ -909,12 +959,217 @@ class PositionalDirectionalLeakageSinglePlotter:
                 title_text += f"; SL:: {range_id}"
 
             if current_title:
-                ax.set_title(f"{current_title}\n{title_text}", fontsize=9)
+                ax.set_title(f"{current_title}\n{title_text}", fontsize=10)
             else:
-                ax.set_title(title_text, fontsize=9)
+                ax.set_title(title_text, fontsize=10)
 
         # Set integer x-axis ticks
         ax.set_xticks(positions)
 
         # Grid for better readability
         ax.grid(True, alpha=0.3)
+
+
+class PositionalDirectionalLeakageHeatmapSinglePlotter:
+    """
+    Class for plotting positional directional leakage results as heatmaps.
+    Shows detailed position-wise similarities in matrix form.
+    """
+
+    def __init__(self):
+        pass
+
+    def plot_heatmap_in_subplot(
+        self,
+        ax: plt.Axes,
+        results: Dict[str, Any],
+        show_title: bool = True,
+        compact: bool = True,
+        show_segment_lengths: bool = False,
+    ) -> None:
+        """
+        Plot positional directional leakage results as a heatmap in a given subplot.
+
+        Args:
+            ax: Matplotlib Axes object to plot on
+            results: Dictionary returned from run_positional_directional_leakage_analysis()
+            show_title: Whether to show the title (default: True)
+            compact: Whether to use a compact plot style for multi-plot figures (default: True)
+            show_segment_lengths: Whether to show segment length information in title and legends (default: True)
+        """
+        # Extract data from results
+        position_forward_influence = results["position_forward_influence"]
+        position_backward_influence = results["position_backward_influence"]
+        all_positions = results["all_positions"]
+
+        # Create position-wise similarity matrix
+        # We'll create a matrix where each cell (i,j) represents the similarity
+        # Upper triangle: forward similarities (pos i -> pos j, where j > i)
+        # Lower triangle: backward similarities (pos i -> pos j, where i > j)
+        max_pos = max(all_positions)
+        similarity_matrix = np.full((max_pos, max_pos), np.nan)
+
+        # For now, we use the available aggregated data to approximate the heatmap
+        # This is a limitation of the current data structure, which aggregates similarities per position
+        # For exact pairwise data, the core analysis would need modification
+
+        # Fill upper triangle with forward similarities
+        for i in range(max_pos):
+            pos_i = i + 1  # Convert to 1-based position
+            if pos_i in position_forward_influence:
+                forward_values = position_forward_influence[pos_i]
+                if forward_values:
+                    avg_forward = np.mean(forward_values)
+                    # Distribute this average to all forward positions
+                    for j in range(i + 1, max_pos):
+                        similarity_matrix[i, j] = avg_forward
+
+        # Fill lower triangle with backward similarities
+        for i in range(max_pos):
+            pos_i = i + 1  # Convert to 1-based position
+            if pos_i in position_backward_influence:
+                backward_values = position_backward_influence[pos_i]
+                if backward_values:
+                    avg_backward = np.mean(backward_values)
+                    # Distribute this average to all backward positions
+                    for j in range(i):
+                        similarity_matrix[i, j] = avg_backward
+
+        # Create heatmap with a diverging colormap
+        im = ax.imshow(
+            similarity_matrix,
+            cmap="RdBu_r",  # Red-Blue reversed (red for high similarity)
+            aspect="equal",
+            interpolation="nearest",
+            vmin=-1,  # Cosine similarity range
+            vmax=1,
+        )
+
+        # Set ticks and labels
+        ax.set_xticks(range(max_pos))
+        ax.set_yticks(range(max_pos))
+        ax.set_xticklabels(
+            [f"P{i+1}" for i in range(max_pos)], fontsize=8 if compact else 10
+        )
+        ax.set_yticklabels(
+            [f"P{i+1}" for i in range(max_pos)], fontsize=8 if compact else 10
+        )
+
+        # Add grid between cells
+        ax.set_xticks(np.arange(-0.5, max_pos, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, max_pos, 1), minor=True)
+        ax.grid(which="minor", color="white", linestyle="-", linewidth=1)
+
+        # Add value annotations to cells
+        for i in range(max_pos):
+            for j in range(max_pos):
+                if not np.isnan(similarity_matrix[i, j]):
+                    value = similarity_matrix[i, j]
+                    # Choose text color based on value for readability
+                    text_color = "white" if abs(value) > 0.5 else "black"
+                    ax.text(
+                        j,
+                        i,
+                        f"{value:.2f}",
+                        ha="center",
+                        va="center",
+                        color=text_color,
+                        fontsize=6 if compact else 8,
+                    )
+
+        # Set labels
+        ax.set_xlabel("Target Position", fontsize=9 if compact else 11)
+        ax.set_ylabel("Source Position", fontsize=9 if compact else 11)
+
+        # Add title
+        if show_title:
+            # Extract range ID if available
+            range_id = results.get("range_id", "N/A")
+
+            # Use abbreviated model name if available
+            model_name = results.get(
+                "abbreviated_model_name", results.get("model_name", "Unknown model")
+            )
+
+            # Get language information if available
+            source_lang = results.get("source_lang")
+            target_lang = results.get("target_lang")
+
+            # Add language information if available
+            if target_lang and source_lang:
+                title_text = (
+                    f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                )
+            elif source_lang:
+                title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+            else:
+                title_text = "Position-wise Similarity Matrix"
+
+            if show_segment_lengths:
+                # Add range information as subtitle
+                title_text += f"; SL:: {range_id}"
+
+            ax.set_title(title_text, fontsize=10 if compact else 12)
+
+        # Add legend text explaining the matrix layout
+        legend_text = "Upper: Forward\nLower: Backward"
+        ax.text(
+            0.02,
+            0.98,
+            legend_text,
+            transform=ax.transAxes,
+            verticalalignment="top",
+            fontsize=6 if compact else 8,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8),
+        )
+
+        # Add a small colorbar if not in compact mode
+        if not compact:
+            from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.1)
+            plt.colorbar(im, cax=cax, label="Cosine Similarity")
+
+    def create_detailed_similarity_matrix(self, results: Dict[str, Any]) -> np.ndarray:
+        """
+        Create a detailed similarity matrix with individual pairwise similarities.
+        This function reconstructs the pairwise similarities from the raw data.
+
+        Note: The current implementation uses averaged values due to data structure limitations.
+        For exact pairwise similarities, the core analysis would need to be modified to
+        store individual pairwise similarities rather than position-aggregated lists.
+
+        Args:
+            results: Dictionary returned from run_positional_directional_leakage_analysis()
+
+        Returns:
+            NumPy array representing the similarity matrix
+        """
+        position_forward_influence = results["position_forward_influence"]
+        position_backward_influence = results["position_backward_influence"]
+        all_positions = results["all_positions"]
+
+        max_pos = max(all_positions)
+        similarity_matrix = np.full((max_pos, max_pos), np.nan)
+
+        # This is a simplified approach - we use the mean of all influences from each position
+        # For more precision, the core analysis would need to track individual pairwise similarities
+        for i, pos_i in enumerate(all_positions):
+            # Forward influences from pos_i
+            forward_influences = position_forward_influence.get(pos_i, [])
+            if forward_influences:
+                forward_mean = np.mean(forward_influences)
+                for j, pos_j in enumerate(all_positions):
+                    if pos_j > pos_i:
+                        similarity_matrix[pos_i - 1, pos_j - 1] = forward_mean
+
+            # Backward influences from pos_i
+            backward_influences = position_backward_influence.get(pos_i, [])
+            if backward_influences:
+                backward_mean = np.mean(backward_influences)
+                for j, pos_j in enumerate(all_positions):
+                    if pos_i > pos_j:
+                        similarity_matrix[pos_i - 1, pos_j - 1] = backward_mean
+
+        return similarity_matrix

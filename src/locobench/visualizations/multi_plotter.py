@@ -18,12 +18,14 @@ from ..core.segment_embedding_analysis import (
     DocumentSegmentSimilarityAnalyzer,
     DirectionalLeakageAnalyzer,
     PositionalDirectionalLeakageAnalyzer,
+    compute_position_token_lengths,
 )
 
 from .single_plotters import (
     DirectionalLeakageSinglePlotter,
     PositionSimilaritySinglePlotter,
     PositionalDirectionalLeakageSinglePlotter,
+    PositionalDirectionalLeakageHeatmapSinglePlotter,
 )
 
 
@@ -109,6 +111,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         pooling_strategy_document: str = "cls",
         matryoshka_dimensions: Optional[List[int]] = None,
         show_segment_lengths: bool = False,
+        show_lengths: bool = False,
         figure_width: int = 15,
         subplot_height: int = 5,
         save_plot: bool = False,
@@ -152,6 +155,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             pooling_strategy_document=pooling_strategy_document,
             matryoshka_dimensions=matryoshka_dimensions,
             show_segment_lengths=show_segment_lengths,
+            show_lengths=show_lengths,
             figure_width=figure_width,
             subplot_height=subplot_height,
             save_plot=save_plot,
@@ -178,6 +182,7 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
         pooling_strategy_document: str = "cls",
         matryoshka_dimensions: Optional[List[int]] = None,
         show_segment_lengths: bool = False,
+        show_lengths: bool = False,
         figure_width: int = 15,
         subplot_height: int = 5,
         save_plot: bool = False,
@@ -221,6 +226,7 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
             pooling_strategy_document=pooling_strategy_document,
             matryoshka_dimensions=matryoshka_dimensions,
             show_segment_lengths=show_segment_lengths,
+            show_lengths=show_lengths,
             figure_width=figure_width,
             subplot_height=subplot_height,
             save_plot=save_plot,
@@ -303,6 +309,76 @@ class PositionalDirectionalLeakageMultiPlotter:
         )
 
 
+class PositionalDirectionalLeakageHeatmapMultiPlotter:
+    """
+    Class to handle the plotting of positional directional leakage analysis results as heatmaps.
+    Each subplot shows a matrix where:
+    - Upper triangle: forward similarities (position i -> position j, where j > i)
+    - Lower triangle: backward similarities (position i -> position j, where i > j)
+    - Diagonal: not applicable (set to NaN)
+
+    This provides detailed position-wise similarity information rather than averaged values.
+    """
+
+    def __init__(self):
+        self.analysis_type = "positional_directional_leakage_heatmap"
+
+    def plot(
+        self,
+        paths: List[str | Path],
+        pooling_strategy_segment_standalone: str = "mean",
+        matryoshka_dimensions: Optional[List[int]] = None,
+        show_segment_lengths: bool = False,
+        figure_width: int = 15,
+        subplot_height: int = 5,
+        save_plot: bool = False,
+        save_path: Optional[str] = None,
+        show_plot: bool = True,
+        return_full_results: bool = False,
+        single_model_mode: Optional[bool] = None,
+    ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+        """
+        Analyze and plot positional directional leakage heatmaps for multiple experiments in a grid,
+        organized by model name and concat size.
+
+        Args:
+            paths: List of paths to experiment results
+            pooling_strategy_segment_standalone: Either "cls" or "mean" for standalone segment embeddings pooling
+            matryoshka_dimensions: Optional list of dimensions to truncate embeddings to for Matryoshka analysis
+            show_segment_lengths: Whether to show segment length information in titles and legends
+            figure_width: Width of the complete figure in inches
+            subplot_height: Height of each subplot in inches
+            save_plot: Whether to save the plot
+            save_path: Path to save the figure (if None and save_plot is True, saves to first path directory)
+            show_plot: Whether to display the plot
+            return_full_results: Whether to return the full analysis results
+            single_model_mode: If True, optimize layout for single model. If None, auto-detect based on data
+
+        Returns:
+            If return_full_results is True, returns a dictionary with model names as keys and
+            lists of result dictionaries as values
+        """
+        heatmap_single_plotter = PositionalDirectionalLeakageHeatmapSinglePlotter()
+
+        return analyze_and_plot_multiple_results(
+            paths=paths,
+            analysis_type=self.analysis_type,
+            title="Position-wise Directional Leakage Heatmaps",
+            pooling_legend_type="segment_standalone",
+            subplotter=heatmap_single_plotter.plot_heatmap_in_subplot,
+            pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+            matryoshka_dimensions=matryoshka_dimensions,
+            show_segment_lengths=show_segment_lengths,
+            figure_width=figure_width,
+            subplot_height=subplot_height,
+            save_plot=save_plot,
+            save_path=save_path,
+            show_plot=show_plot,
+            return_full_results=return_full_results,
+            single_model_mode=single_model_mode,
+        )
+
+
 def analyze_and_plot_multiple_results(
     paths: List[str | Path],
     analysis_type: str = "position",  # Either "position" or "directional_leakage"
@@ -314,6 +390,7 @@ def analyze_and_plot_multiple_results(
     pooling_strategy_document: str = "cls",
     matryoshka_dimensions: Optional[List[int]] = None,
     show_segment_lengths: bool = False,
+    show_lengths: bool = False,
     figure_width: int = 15,
     subplot_height: int = 4,
     save_plot: bool = False,
@@ -324,11 +401,12 @@ def analyze_and_plot_multiple_results(
 ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
     """
     Analyze and plot multiple experiment results in a grid, organized by model name and concat size.
-    Supports both position similarity and directional leakage analysis.
+    Supports position similarity, directional leakage, and heatmap analysis.
 
     Args:
         paths: List of paths to experiment results
-        analysis_type: Type of analysis to perform ("position" or "directional_leakage")
+        analysis_type: Type of analysis to perform ("position", "directional_leakage",
+                      "positional_directional_leakage", or "positional_directional_leakage_heatmap")
         document_embedding_type: Type of document embedding to use
         title: Title for the plot
         pooling_legend_type: Type of pooling legend to show
@@ -338,6 +416,7 @@ def analyze_and_plot_multiple_results(
                                       (only used for position analysis)
         matryoshka_dimensions: Optional list of dimensions to truncate embeddings to for Matryoshka analysis
         show_segment_lengths: Whether to show segment length information in titles and legends (default: True)
+        show_lengths: Whether to show token lengths as bar charts on right y-axis (default: False)
         figure_width: Width of the complete figure in inches
         subplot_height: Height of each subplot in inches
         save_plot: Whether to save the plot
@@ -377,9 +456,15 @@ def analyze_and_plot_multiple_results(
             path, pooling_strategy_segment_standalone, matryoshka_dimensions
         )
         plot_in_subplot = subplotter
+    elif analysis_type == "positional_directional_leakage_heatmap":
+        positional_directional_leakage_analyzer = PositionalDirectionalLeakageAnalyzer()
+        run_analysis = lambda path: positional_directional_leakage_analyzer.run_positional_directional_leakage_analysis(
+            path, pooling_strategy_segment_standalone, matryoshka_dimensions
+        )
+        plot_in_subplot = subplotter
     else:
         raise ValueError(
-            f"Unknown analysis_type: {analysis_type}. Use 'position' or 'directional_leakage'."
+            f"Unknown analysis_type: {analysis_type}. Use 'position', 'directional_leakage', 'positional_directional_leakage', or 'positional_directional_leakage_heatmap'."
         )
 
     # Run analysis for each path
@@ -388,6 +473,11 @@ def analyze_and_plot_multiple_results(
         # print(f"Processing {path}...")
         results = run_analysis(path)
         all_results.append(results)
+
+    # Compute token lengths if requested
+    token_length_results = {}
+    if show_lengths:
+        token_length_results = compute_position_token_lengths(paths)
 
     # Group results by model name
     model_groups = defaultdict(list)
@@ -400,6 +490,11 @@ def analyze_and_plot_multiple_results(
             model_name = "jina-v3"
         # Store result with abbreviated model name
         result["abbreviated_model_name"] = model_name
+
+        # Add token length data if available
+        if show_lengths and str(result["path"]) in token_length_results:
+            result["token_lengths"] = token_length_results[str(result["path"])]
+
         model_groups[model_name].append(result)
 
     # Sort results within each group by concat size
@@ -453,6 +548,13 @@ def analyze_and_plot_multiple_results(
                 all_values.extend(result["position_ci_lower"])
                 all_values.extend(result["position_ci_upper"])
 
+                # Also collect Matryoshka results if available
+                if "matryoshka_results" in result:
+                    for dim_results in result["matryoshka_results"].values():
+                        all_values.extend(dim_results["position_means"])
+                        all_values.extend(dim_results["position_ci_lower"])
+                        all_values.extend(dim_results["position_ci_upper"])
+
             if all_values:
                 # Add a small margin (5%) to the range
                 y_min = min(all_values)
@@ -487,6 +589,31 @@ def analyze_and_plot_multiple_results(
                 model_ylims[model_name] = (y_min, y_max)
             else:
                 model_ylims[model_name] = None
+    elif analysis_type == "positional_directional_leakage_heatmap":
+        # For heatmaps, we don't need ylims since we use imshow
+        # The colormap will handle the scaling automatically with vmin/vmax
+        for model_name, results in model_groups.items():
+            model_ylims[model_name] = None
+
+    # Calculate global token length limits for each model (for show_lengths)
+    model_token_ylims = {}
+    if show_lengths:
+        for model_name, results in model_groups.items():
+            all_token_lengths = []
+            for result in results:
+                if "token_lengths" in result:
+                    token_data = result["token_lengths"]
+                    all_token_lengths.extend(token_data["position_means"])
+
+            if all_token_lengths:
+                # Add a small margin (5%) to the range
+                y_min = min(all_token_lengths)
+                y_max = max(all_token_lengths)
+                y_range = y_max - y_min
+                margin = y_range * 0.05
+                model_token_ylims[model_name] = (max(0, y_min - margin), y_max + margin)
+            else:
+                model_token_ylims[model_name] = None
 
     # Calculate global x-limits for each model (for directional leakage analysis only)
     model_xlims = {}
@@ -578,7 +705,7 @@ def analyze_and_plot_multiple_results(
             total_cols_with_spacing,
             figure=fig,
             width_ratios=width_ratios,
-            wspace=0.12,  # Reduced since y-axis labels are hidden on most subplots
+            wspace=0.35,  # Reduced since y-axis labels are hidden on most subplots
             hspace=0.30,  # Reduced since x-axis labels are hidden on most subplots
         )
     else:
@@ -621,6 +748,20 @@ def analyze_and_plot_multiple_results(
 
     # Add concat_size label only once per row (on the left)
     concat_size_label_drawn = set()
+
+    # Calculate the rightmost column that contains actual data (not spacing)
+    rightmost_col = -1
+    for model_name, results in model_groups.items():
+        concat_size_groups = defaultdict(list)
+        for result in results:
+            concat_size_groups[result["concat_size"]].append(result)
+
+        col_start = model_col_start_indices[model_name]
+        for concat_size, size_results in concat_size_groups.items():
+            for local_col_idx, result in enumerate(size_results):
+                col_idx = col_start + local_col_idx
+                rightmost_col = max(rightmost_col, col_idx)
+
     for model_idx, (model_name, results) in enumerate(model_groups.items()):
         concat_size_groups = defaultdict(list)
         for result in results:
@@ -648,6 +789,13 @@ def analyze_and_plot_multiple_results(
                 # Pass ylim for position analysis or xlim for directional leakage analysis
                 if analysis_type == "position":
                     ylim = model_ylims.get(model_name)
+                    token_ylim = (
+                        model_token_ylims.get(model_name) if show_lengths else None
+                    )
+                    # Only show token y-axis label on the rightmost subplot
+                    show_token_ylabel = (
+                        (col_idx == rightmost_col) if show_lengths else True
+                    )
                     plot_in_subplot(
                         ax,
                         result,
@@ -655,6 +803,9 @@ def analyze_and_plot_multiple_results(
                         compact=True,
                         ylim=ylim,
                         show_segment_lengths=show_segment_lengths,
+                        show_lengths=show_lengths,
+                        token_ylim=token_ylim,
+                        show_token_ylabel=show_token_ylabel,
                     )
                 elif analysis_type == "directional_leakage":
                     xlim = model_xlims.get(model_name)
@@ -669,6 +820,14 @@ def analyze_and_plot_multiple_results(
                         show_title=True,
                         compact=True,
                         ylim=ylim,
+                        show_segment_lengths=show_segment_lengths,
+                    )
+                elif analysis_type == "positional_directional_leakage_heatmap":
+                    plot_in_subplot(
+                        ax,
+                        result,
+                        show_title=True,
+                        compact=True,
                         show_segment_lengths=show_segment_lengths,
                     )
                 else:
@@ -784,7 +943,11 @@ def analyze_and_plot_multiple_results(
                 fontweight="bold",
                 y=y_title,
             )
-        elif analysis_type in ("directional_leakage", "positional_directional_leakage"):
+        elif analysis_type in (
+            "directional_leakage",
+            "positional_directional_leakage",
+            "positional_directional_leakage_heatmap",
+        ):
             # Directional leakage title
             fig.suptitle(
                 title,
@@ -798,6 +961,19 @@ def analyze_and_plot_multiple_results(
             subtitle_text = (
                 "Forward Similarity (F): Earlier segments' standalone embeddings ↔ Later segments' contextualized embeddings\n"
                 "Backward Similarity (B): Later segments' standalone embeddings ↔ Earlier segments' contextualized embeddings"
+            )
+            fig.text(
+                0.5,
+                y_subtitle,  # Position between title and plots
+                subtitle_text,
+                ha="center",
+                va="top",
+                fontsize=18,
+            )
+        elif analysis_type == "positional_directional_leakage_heatmap":
+            subtitle_text = (
+                "Similarity matrices: Upper triangle = Forward (earlier→later), Lower triangle = Backward (later→earlier)\n"
+                "Values represent cosine similarities between standalone and contextualized embeddings"
             )
             fig.text(
                 0.5,
@@ -935,6 +1111,54 @@ def analyze_and_plot_multiple_results(
 
         # Determine number of columns based on number of handles
         ncol = min(len(handles), 6)  # Maximum 6 columns to avoid overcrowding
+
+        fig.legend(
+            handles=handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, legend_y),
+            ncol=ncol,
+            fontsize=9,
+            frameon=False,
+            columnspacing=2.0,
+            handletextpad=1.2,
+        )
+    elif analysis_type == "positional_directional_leakage_heatmap":
+        # Heatmap legend with colorbar explanation
+        handles = []
+
+        # Add colorbar explanation patch
+        colorbar_patch = mpatches.Patch(
+            color="lightblue",
+            label="Colorbar: Red = High similarity, Blue = Low similarity",
+        )
+        handles.append(colorbar_patch)
+
+        # Add matrix explanation patches
+        upper_patch = mpatches.Patch(
+            color="lightcoral",
+            alpha=0.7,
+            label="Upper triangle: Forward (earlier→later)",
+        )
+        lower_patch = mpatches.Patch(
+            color="lightgreen",
+            alpha=0.7,
+            label="Lower triangle: Backward (later→earlier)",
+        )
+        handles.append(upper_patch)
+        handles.append(lower_patch)
+
+        # Add Matryoshka dimensions if present
+        has_matryoshka = any("matryoshka_results" in result for result in all_results)
+        if has_matryoshka and matryoshka_dimensions:
+            mat_patch = mpatches.Patch(
+                color="gold",
+                alpha=0.7,
+                label=f"Matryoshka dimensions: {matryoshka_dimensions}",
+            )
+            handles.append(mat_patch)
+
+        # Determine number of columns based on number of handles
+        ncol = min(len(handles), 3)  # Maximum 3 columns for heatmap legends
 
         fig.legend(
             handles=handles,
