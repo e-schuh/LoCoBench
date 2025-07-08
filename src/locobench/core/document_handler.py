@@ -35,7 +35,12 @@ class DocumentHandler:
             tokenizer_name: Name or path of the HuggingFace tokenizer to use.
                             Defaults to 'bert-base-uncased'.
         """
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        if tokenizer_name in ("Qwen/Qwen3-Embedding-0.6B"):
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_name, padding_side="left"
+            )
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
     def load_from_text_files(self, directory: str) -> List[Dict[str, str]]:
         """
@@ -287,6 +292,10 @@ class DocumentHandler:
         # Remove special tokens (like CLS and SEP) from the documents except for the first CLS and last SEP
         cls_token_id = self.tokenizer.cls_token_id
         sep_token_id = self.tokenizer.sep_token_id
+        if self.tokenizer.name_or_path in ("Qwen/Qwen3-Embedding-0.6B"):
+            sep_token_id = (
+                self.tokenizer.pad_token_id
+            )  # For Qwen3, pad token is used as separator
 
         # Process first document - keep CLS but remove SEP
         first_doc_ids = input_ids_list[0]
@@ -326,7 +335,10 @@ class DocumentHandler:
 
         # Calculate document boundaries (excluding special tokens)
         doc_boundaries = []
-        current_idx = 1  # Start after CLS token
+        if cls_token_id:
+            current_idx = 1  # Start after CLS token
+        else:
+            current_idx = 0
 
         for i, doc in enumerate(documents):
             doc_length = len(input_ids_list[i])
@@ -334,7 +346,9 @@ class DocumentHandler:
             # Adjust for special tokens
             if i == 0:  # First document
                 doc_length = (
-                    doc_length - (1 if input_ids_list[i][-1] == sep_token_id else 0) - 1
+                    doc_length
+                    - (1 if input_ids_list[i][-1] == sep_token_id else 0)
+                    - (1 if input_ids_list[i][0] == cls_token_id else 0)
                 )  # Subtract CLS
                 doc_end = current_idx + doc_length
                 doc_boundaries.append([current_idx, doc_end])

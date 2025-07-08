@@ -13,6 +13,8 @@ from transformers import AutoModel
 from typing import List, Dict, Union, Literal, Optional, Any, Tuple
 import tqdm
 import importlib.util
+from torch import Tensor
+
 
 DEVICE = (
     "cuda"
@@ -65,6 +67,12 @@ class BaseEmbedder:
                 trust_remote_code=True,
                 unpad_inputs=True,
                 use_memory_efficient_attention=True,
+                torch_dtype=torch.float16,
+            ).to(self.device)
+        elif model_name == "Qwen/Qwen3-Embedding-0.6B" and xformers_available:
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                attn_implementation="flash_attention_2",
                 torch_dtype=torch.float16,
             ).to(self.device)
         else:
@@ -153,8 +161,13 @@ class BaseEmbedder:
         Returns:
             Dictionary containing both types of embeddings ('cls' and 'mean')
         """
-        # Get CLS token embeddings (first token)
-        cls_embeddings = last_hidden_state[:, 0]  # (shape: [batch_size, hidden_size])
+        if self.model_name in ("Qwen/Qwen3-Embedding-0.6B"):
+            # For Qwen models, use the last token pooling strategy
+            cls_embeddings = self.last_token_pool(last_hidden_state, attention_mask)
+        else:
+            # For other models, use the first token as CLS token
+            cls_embeddings = last_hidden_state[:, 0]
+            # (shape: [batch_size, hidden_size])
 
         # Get mean pooled embeddings
         mean_embeddings = self.mean_pooling(last_hidden_state, attention_mask)
@@ -165,6 +178,18 @@ class BaseEmbedder:
             mean_embeddings = F.normalize(mean_embeddings, p=2, dim=1)
 
         return {"cls": cls_embeddings, "mean": mean_embeddings}
+
+    def last_token_pool(last_hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
+        left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
+        if left_padding:
+            return last_hidden_states[:, -1]
+        else:
+            sequence_lengths = attention_mask.sum(dim=1) - 1
+            batch_size = last_hidden_states.shape[0]
+            return last_hidden_states[
+                torch.arange(batch_size, device=last_hidden_states.device),
+                sequence_lengths,
+            ]
 
 
 class StandaloneEmbedder(BaseEmbedder):

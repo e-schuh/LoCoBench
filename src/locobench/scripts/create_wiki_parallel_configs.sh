@@ -6,7 +6,7 @@ usage() {
     echo ""
     echo "Arguments:"
     echo "  output_folder         : Path where config JSON files will be saved"
-    echo "  model                 : Model type (mgte or jina)"
+    echo "  model                 : Model type (mgte, jina, or qwen3)"
     echo "  experiment_number     : Experiment number (1, 2, 3, 4, ...)"
     echo "  source_langs          : Comma-separated source language codes (e.g., en,de)"
     echo "  target_langs          : Comma-separated target language codes (e.g., en,de,ko)"
@@ -14,12 +14,14 @@ usage() {
     echo "  batch_size_concat     : Optional batch size for concat (default: 2)"
     echo ""
     echo "Model configurations:"
-    echo "  mgte : Uses Alibaba-NLP/gte-multilingual-base"
-    echo "  jina : Uses jinaai/jina-embeddings-v3"
+    echo "  mgte  : Uses Alibaba-NLP/gte-multilingual-base"
+    echo "  jina  : Uses jinaai/jina-embeddings-v3"
+    echo "  qwen3 : Uses Qwen/Qwen3-Embedding-0.6B"
     echo ""
     echo "Example:"
     echo "  $0 config/MyModel/wiki_parallel mgte 4 en,de en,de,ko"
     echo "  $0 config/MyModel/wiki_parallel jina 4 en,de en,de,ko 16 4"
+    echo "  $0 config/MyModel/wiki_parallel qwen3 4 en,de en,de,ko"
     exit 1
 }
 
@@ -48,8 +50,12 @@ case "$MODEL" in
         MODEL_NAME="jinaai/jina-embeddings-v3"
         TOKENIZED_DATASET_PATH="data/wiki_parallel_en_de_hi_it_ko_zh/tokenized__jinaai_jina-embeddings-v3"
         ;;
+    "qwen3")
+        MODEL_NAME="Qwen/Qwen3-Embedding-0.6B"
+        TOKENIZED_DATASET_PATH="data/wiki_parallel_en_de_hi_it_ko_zh/tokenized__Qwen_Qwen3-Embedding-0.6B"
+        ;;
     *)
-        echo "Error: Invalid model '$MODEL'. Must be 'mgte' or 'jina'"
+        echo "Error: Invalid model '$MODEL'. Must be 'mgte', 'jina', or 'qwen3'"
         exit 1
         ;;
 esac
