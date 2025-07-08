@@ -179,7 +179,9 @@ class BaseEmbedder:
 
         return {"cls": cls_embeddings, "mean": mean_embeddings}
 
-    def last_token_pool(last_hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
+    def last_token_pool(
+        self, last_hidden_states: Tensor, attention_mask: Tensor
+    ) -> Tensor:
         left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
         if left_padding:
             return last_hidden_states[:, -1]
