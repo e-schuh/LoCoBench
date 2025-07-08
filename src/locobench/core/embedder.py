@@ -72,8 +72,10 @@ class BaseEmbedder:
         elif model_name == "Qwen/Qwen3-Embedding-0.6B" and xformers_available:
             self.model = AutoModel.from_pretrained(
                 model_name,
+                trust_remote_code=True,
                 attn_implementation="flash_attention_2",
                 torch_dtype=torch.float16,
+                device_map=self.device,
             ).to(self.device)
         else:
             self.model = AutoModel.from_pretrained(
