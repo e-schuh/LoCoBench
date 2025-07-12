@@ -365,9 +365,9 @@ class PositionSimilaritySinglePlotter:
                 title_text += f"; SL:: {range_id}"
 
             if current_title:
-                ax.set_title(f"{current_title}\n{title_text}", fontsize=10)
+                ax.set_title(f"{current_title}\n{title_text}", fontsize=11)
             else:
-                ax.set_title(title_text, fontsize=10)
+                ax.set_title(title_text, fontsize=11)
 
         # Set x-axis ticks to be integers
         ax.set_xticks(positions)
@@ -380,7 +380,7 @@ class PositionSimilaritySinglePlotter:
         # Use more decimal places if the y-range is small to avoid duplicate tick labels
         if ylim is not None:
             y_range = ylim[1] - ylim[0]
-            if y_range < 0.1:
+            if y_range < 0.3:
                 # For small ranges, use 2 decimal places
                 ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
             else:
@@ -689,6 +689,8 @@ class DirectionalLeakageSinglePlotter:
                 model_name = "mGTE"
             elif "jinaai/jina-embeddings-v3" in model_name:
                 model_name = "jina-v3"
+            elif "Qwen/Qwen3-Embedding-0.6B" in model_name:
+                model_name = "qwen3-0.6B"
             # Store result with abbreviated model name
             results["abbreviated_model_name"] = model_name
 
@@ -710,7 +712,7 @@ class DirectionalLeakageSinglePlotter:
                 if show_segment_lengths:
                     title_text += f"; SL:: {range_id}"
 
-                ax.set_title(title_text, fontsize=10)
+                ax.set_title(title_text, fontsize=11)
             else:
                 # For single plots, show more detailed information
                 size_info = str(results["concat_size"])
@@ -952,16 +954,16 @@ class PositionalDirectionalLeakageSinglePlotter:
             elif source_lang:
                 title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
             else:
-                title_text = "Position-wise Directional Influence"
+                title_text = "Position-wise Influence on Segment Contextualization"
 
             if show_segment_lengths:
                 # Add range information as subtitle
                 title_text += f"; SL:: {range_id}"
 
             if current_title:
-                ax.set_title(f"{current_title}\n{title_text}", fontsize=10)
+                ax.set_title(f"{current_title}\n{title_text}", fontsize=11)
             else:
-                ax.set_title(title_text, fontsize=10)
+                ax.set_title(title_text, fontsize=11)
 
         # Set integer x-axis ticks
         ax.set_xticks(positions)
@@ -1109,7 +1111,7 @@ class PositionalDirectionalLeakageHeatmapSinglePlotter:
                 # Add range information as subtitle
                 title_text += f"; SL:: {range_id}"
 
-            ax.set_title(title_text, fontsize=10 if compact else 12)
+            ax.set_title(title_text, fontsize=11 if compact else 13)
 
         # Add legend text explaining the matrix layout
         legend_text = "Upper: Forward\nLower: Backward"

@@ -293,7 +293,7 @@ class PositionalDirectionalLeakageMultiPlotter:
         return analyze_and_plot_multiple_results(
             paths=paths,
             analysis_type=self.analysis_type,
-            title="Position-wise Directional Information Flow",
+            title="Position-wise Influence on Segment Contextualization",
             pooling_legend_type="segment_standalone",
             subplotter=positional_directional_leakage_single_plotter.plot_positional_directional_leakage_in_subplot,
             pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
@@ -488,6 +488,8 @@ def analyze_and_plot_multiple_results(
             model_name = "mGTE"
         elif "jinaai/jina-embeddings-v3" in model_name:
             model_name = "jina-v3"
+        elif "Qwen/Qwen3-Embedding-0.6B" in model_name:
+            model_name = "qwen3-0.6B"
         # Store result with abbreviated model name
         result["abbreviated_model_name"] = model_name
 
