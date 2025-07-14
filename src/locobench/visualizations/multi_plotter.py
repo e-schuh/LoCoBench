@@ -269,12 +269,17 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         config_groups = defaultdict(list)
         for path in paths:
             exp_info = load_exp_info(path)
-            # Parse language from path
-            path_str = str(path)
-            lang_match = re.search(r"__([a-z]{2})__", path_str)
-            lang = lang_match.group(1) if lang_match else "unknown"
+            # Use source_lang and target_lang from the experiment info for proper language identification
+            source_lang = exp_info.get("source_lang", "unknown")
+            target_lang = exp_info.get("target_lang", None)
+            
+            # Create language key that distinguishes between monolingual and multilingual experiments
+            if target_lang is None:
+                lang_key = source_lang  # Monolingual: e.g., "de"
+            else:
+                lang_key = f"{source_lang}_{target_lang}"  # Multilingual: e.g., "de_en"
 
-            config_key = (exp_info["concat_size"], lang)
+            config_key = (exp_info["concat_size"], lang_key)
             config_groups[config_key].append((path, exp_info["model_name"]))
 
         # Pre-compute ALL results for ALL models to get proper y-limits
@@ -1562,13 +1567,17 @@ class MultiModelPositionSimilaritySinglePlotter:
         config_groups = defaultdict(list)
         for path in self.paths:
             exp_info = load_exp_info(path)
-            # Create a config key that includes concat_size and language info
-            # Parse language from path
-            path_str = str(path)
-            lang_match = re.search(r"__([a-z]{2})__", path_str)
-            lang = lang_match.group(1) if lang_match else "unknown"
+            # Use source_lang and target_lang from the experiment info for proper language identification
+            source_lang = exp_info.get("source_lang", "unknown")
+            target_lang = exp_info.get("target_lang", None)
+            
+            # Create language key that distinguishes between monolingual and multilingual experiments
+            if target_lang is None:
+                lang_key = source_lang  # Monolingual: e.g., "de"
+            else:
+                lang_key = f"{source_lang}_{target_lang}"  # Multilingual: e.g., "de_en"
 
-            config_key = (exp_info["concat_size"], lang)
+            config_key = (exp_info["concat_size"], lang_key)
             config_groups[config_key].append((path, exp_info["model_name"]))
 
         return config_groups
@@ -1603,10 +1612,16 @@ class MultiModelPositionSimilaritySinglePlotter:
 
         # Find the config key for this result
         concat_size = base_result["concat_size"]
-        path_str = str(base_result.get("path", ""))
-        lang_match = re.search(r"__([a-z]{2})__", path_str)
-        lang = lang_match.group(1) if lang_match else "unknown"
-        config_key = (concat_size, lang)
+        source_lang = base_result.get("source_lang", "unknown")
+        target_lang = base_result.get("target_lang", None)
+        
+        # Create language key that matches the grouping logic
+        if target_lang is None:
+            lang_key = source_lang  # Monolingual: e.g., "de"
+        else:
+            lang_key = f"{source_lang}_{target_lang}"  # Multilingual: e.g., "de_en"
+            
+        config_key = (concat_size, lang_key)
 
         # Define colors for different models
         model_colors = {"mGTE": "blue", "jina-v3": "red", "qwen3-0.6B": "green"}
@@ -1765,10 +1780,16 @@ class MultiModelPositionSimilaritySinglePlotter:
 
         # Find the config key for this result
         concat_size = base_result["concat_size"]
-        path_str = str(base_result.get("path", ""))
-        lang_match = re.search(r"__([a-z]{2})__", path_str)
-        lang = lang_match.group(1) if lang_match else "unknown"
-        config_key = (concat_size, lang)
+        source_lang = base_result.get("source_lang", "unknown")
+        target_lang = base_result.get("target_lang", None)
+        
+        # Create language key that matches the grouping logic
+        if target_lang is None:
+            lang_key = source_lang  # Monolingual: e.g., "de"
+        else:
+            lang_key = f"{source_lang}_{target_lang}"  # Multilingual: e.g., "de_en"
+            
+        config_key = (concat_size, lang_key)
 
         # Define colors for different models
         model_colors = {"mGTE": "blue", "jina-v3": "red", "qwen3-0.6B": "green"}
