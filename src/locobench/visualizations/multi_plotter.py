@@ -1122,14 +1122,28 @@ def analyze_and_plot_multiple_results(
         y_subtitle = y_title - 0.035
 
         if analysis_type == "position":
-            # Include model name in the title for single model
-            title_with_model = f"{title} - {single_model_name}"
-            fig.suptitle(
-                title_with_model,
-                fontsize=22,
-                fontweight="bold",
-                y=y_title,
+            # Check if this is a multi-model plot (even if single_model_mode is True due to auto-detection)
+            is_multi_model = hasattr(subplotter, "__self__") and hasattr(
+                subplotter.__self__, "original_subplotter_obj"
             )
+            
+            if is_multi_model:
+                # For multi-model plots, don't include model name in title
+                fig.suptitle(
+                    title,
+                    fontsize=22,
+                    fontweight="bold",
+                    y=y_title,
+                )
+            else:
+                # Include model name in the title for single model
+                title_with_model = f"{title} - {single_model_name}"
+                fig.suptitle(
+                    title_with_model,
+                    fontsize=22,
+                    fontweight="bold",
+                    y=y_title,
+                )
         elif analysis_type in ("directional_leakage", "positional_directional_leakage"):
             # Include model name in the title for single model
             title_with_model = f"{title} - {single_model_name}"
