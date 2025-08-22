@@ -36,6 +36,7 @@ class AnalysisConfig:
     exclude_first_token: bool = True
     exclude_last_token: bool = True
     max_examples: Optional[int] = None
+    batch_size: Optional[int] = None
     device: Optional[str] = None
     results_path: Optional[str] = None
     plots_out_dir: Optional[str] = None
@@ -480,6 +481,11 @@ class AttentionAggregator:
 def analyze_from_config(args: AnalysisConfig) -> Dict[str, Any]:
     base_config = _load_json(args.config_path)
 
+    # Optional CLI override for concat dataloader batch size
+    if args.batch_size is not None:
+        assert isinstance(args.batch_size, int) and args.batch_size >= 1
+        base_config["batch_size_concat"] = int(args.batch_size)
+
     concat_loader, meta = build_concat_loader_from_config(base_config)
 
     device = args.device or base_config.get("device")
@@ -570,6 +576,12 @@ def _parse_args() -> AnalysisConfig:
         help="Number of relative (percentile) bins in baskets mode",
     )
     p.add_argument(
+        "--batch_size",
+        type=int,
+        default=None,
+        help="Override concat dataloader batch size (default reads from config)",
+    )
+    p.add_argument(
         "--exclude_first_token",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -616,6 +628,7 @@ def _parse_args() -> AnalysisConfig:
         exclude_first_token=bool(a.exclude_first_token),
         exclude_last_token=bool(a.exclude_last_token),
         max_examples=a.max_examples,
+        batch_size=a.batch_size,
         device=a.device,
         results_path=a.results_path,
         plots_out_dir=a.plots_out_dir,
