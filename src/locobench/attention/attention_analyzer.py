@@ -169,8 +169,7 @@ class AttentionAggregator:
         assert input_ids.dim() == 2 and attention_mask.shape == input_ids.shape
         bsz, seq_len = input_ids.shape
 
-        # Assumptions: BERT-like encoder with .embeddings and .encoder.layer
-        assert hasattr(self.model, "embeddings")
+        # Assumptions: Encoder-style model with .encoder.layer
         assert hasattr(self.model, "encoder") and hasattr(self.model.encoder, "layer")
         layers = list(self.model.encoder.layer)
         num_layers = len(layers)
@@ -180,16 +179,6 @@ class AttentionAggregator:
             self.num_layers = num_layers
         else:
             assert self.num_layers == num_layers
-
-        # Prepare attention mask in extended form and initial hidden states
-        hidden_states = self.model.embeddings(input_ids=input_ids)
-        extended_attention_mask = self.model.get_extended_attention_mask(
-            attention_mask,
-            input_ids.shape,
-            device=hidden_states.device,
-            dtype=hidden_states.dtype,
-        )
-        assert hidden_states.shape[:2] == (bsz, seq_len)
 
         # Precompute per-example valid indices and trimming parameters
         valid_indices: List[torch.Tensor] = []
@@ -255,68 +244,89 @@ class AttentionAggregator:
                     assert self.num_articles == len(spans)
                 spans_per_example.append(spans)
 
-        # Iterate layers; at each step, compute attention probs for that layer only
-        for l, layer_module in enumerate(layers):
-            # outputs: (hidden_states, attn_probs, ...)
-            layer_outputs = layer_module(
-                hidden_states,
-                attention_mask=extended_attention_mask,
-                head_mask=None,
-                output_attentions=True,
-            )
-            assert isinstance(layer_outputs, (tuple, list)) and len(layer_outputs) >= 2
-            hidden_states = layer_outputs[0]
-            attn_probs = layer_outputs[1]
-            assert attn_probs.dim() == 4 and attn_probs.shape[0] == bsz
-            # [B, H, L, L]
-            _, num_heads, Lq, Lk = attn_probs.shape
-            assert Lq == seq_len and Lk == seq_len
-
-            # Per-example accumulation for this layer
-            for i in range(bsz):
-                valid_idx = valid_indices[i]
-                L_eff = int(valid_idx.numel())
-                # Build per-layer vector per valid target position before trimming
-                a = attn_probs[i]  # [H, L, L]
-                if not self.only_from_first_token:
-                    incoming = a.sum(dim=1)  # [H, L]
-                    incoming_valid = incoming[:, valid_idx]  # [H, L_eff]
-                    vec_full = incoming_valid.mean(dim=0)  # [L_eff]
+        # Iterate layers one-by-one by temporarily slicing the encoder
+        original_layers = self.model.encoder.layer
+        assert len(original_layers) == num_layers
+        hidden_states: Optional[torch.Tensor] = None
+        try:
+            for l in range(num_layers):
+                # Replace encoder layers with a single layer l
+                self.model.encoder.layer = torch.nn.ModuleList([layers[l]])
+                if l == 0:
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_attentions=True,
+                        return_dict=True,
+                    )
                 else:
-                    q_pos = int(valid_idx[0].item())
-                    row = a[:, q_pos, :]  # [H, L]
-                    row_valid = row[:, valid_idx]  # [H, L_eff]
-                    vec_full = row_valid.mean(dim=0)  # [L_eff]
-                assert vec_full.shape == (L_eff,)
+                    assert hidden_states is not None
+                    assert hidden_states.shape[:2] == (bsz, seq_len)
+                    outputs = self.model(
+                        inputs_embeds=hidden_states,
+                        attention_mask=attention_mask,
+                        output_attentions=True,
+                        return_dict=True,
+                    )
 
-                # Accumulate first/last token attention per layer (before trimming)
-                first_val = float(vec_full[0].item())
-                last_val = float(vec_full[-1].item())
-                if self.sum_first is None:
-                    self.sum_first = torch.zeros(num_layers, dtype=torch.float32)
-                    self.count_first = torch.zeros(num_layers, dtype=torch.float32)
-                    self.sum_last = torch.zeros(num_layers, dtype=torch.float32)
-                    self.count_last = torch.zeros(num_layers, dtype=torch.float32)
-                self.sum_first[l] += first_val
-                self.count_first[l] += 1.0
-                self.sum_last[l] += last_val
-                self.count_last[l] += 1.0
+                # Expect exactly one layer's attentions
+                attn_list = outputs.attentions
+                assert isinstance(attn_list, (list, tuple)) and len(attn_list) == 1
+                attn_probs = attn_list[0]
+                hidden_states = outputs.last_hidden_state
 
-                # Apply exclusions (same for all layers)
-                s_off = 1 if self.exclude_first_token else 0
-                e_off = 1 if self.exclude_last_token else 0
-                L_trim = L_eff - s_off - e_off
-                if L_trim <= 0:
-                    continue
-                vec = vec_full[s_off : s_off + L_trim]
-                assert vec.shape == (L_trim,)
+                assert attn_probs.dim() == 4 and attn_probs.shape[0] == bsz
+                _, num_heads, Lq, Lk = attn_probs.shape
+                assert Lq == seq_len and Lk == seq_len
 
-                if self.analysis_mode == "baskets":
-                    self._accumulate_baskets_absolute_single(l, vec)
-                    self._accumulate_baskets_relative_single(l, vec)
-                else:
-                    assert spans_per_example is not None
-                    self._accumulate_articles_single(l, vec, spans_per_example[i])
+                # Per-example accumulation for this layer
+                for i in range(bsz):
+                    valid_idx = valid_indices[i]
+                    L_eff = int(valid_idx.numel())
+                    # Build per-layer vector per valid target position before trimming
+                    a = attn_probs[i]  # [H, L, L]
+                    if not self.only_from_first_token:
+                        incoming = a.sum(dim=1)  # [H, L]
+                        incoming_valid = incoming[:, valid_idx]  # [H, L_eff]
+                        vec_full = incoming_valid.mean(dim=0)  # [L_eff]
+                    else:
+                        q_pos = int(valid_idx[0].item())
+                        row = a[:, q_pos, :]  # [H, L]
+                        row_valid = row[:, valid_idx]  # [H, L_eff]
+                        vec_full = row_valid.mean(dim=0)  # [L_eff]
+                    assert vec_full.shape == (L_eff,)
+
+                    # Accumulate first/last token attention per layer (before trimming)
+                    first_val = float(vec_full[0].item())
+                    last_val = float(vec_full[-1].item())
+                    if self.sum_first is None:
+                        self.sum_first = torch.zeros(num_layers, dtype=torch.float32)
+                        self.count_first = torch.zeros(num_layers, dtype=torch.float32)
+                        self.sum_last = torch.zeros(num_layers, dtype=torch.float32)
+                        self.count_last = torch.zeros(num_layers, dtype=torch.float32)
+                    self.sum_first[l] += first_val
+                    self.count_first[l] += 1.0
+                    self.sum_last[l] += last_val
+                    self.count_last[l] += 1.0
+
+                    # Apply exclusions (same for all layers)
+                    s_off = 1 if self.exclude_first_token else 0
+                    e_off = 1 if self.exclude_last_token else 0
+                    L_trim = L_eff - s_off - e_off
+                    if L_trim <= 0:
+                        continue
+                    vec = vec_full[s_off : s_off + L_trim]
+                    assert vec.shape == (L_trim,)
+
+                    if self.analysis_mode == "baskets":
+                        self._accumulate_baskets_absolute_single(l, vec)
+                        self._accumulate_baskets_relative_single(l, vec)
+                    else:
+                        assert spans_per_example is not None
+                        self._accumulate_articles_single(l, vec, spans_per_example[i])
+        finally:
+            # Restore encoder layers
+            self.model.encoder.layer = original_layers
 
         # Count examples processed
         self.examples_seen += bsz
