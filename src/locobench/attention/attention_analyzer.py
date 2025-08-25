@@ -182,11 +182,11 @@ class AttentionAggregator:
             assert self.num_layers == num_layers
 
         # Prepare attention mask in extended form and initial hidden states
-        hidden_states = self.model.embeddings(input_ids)
+        hidden_states = self.model.embeddings(input_ids=input_ids)
         extended_attention_mask = self.model.get_extended_attention_mask(
             attention_mask,
             input_ids.shape,
-            device=self.device,
+            device=hidden_states.device,
             dtype=hidden_states.dtype,
         )
         assert hidden_states.shape[:2] == (bsz, seq_len)
