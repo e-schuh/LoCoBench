@@ -125,8 +125,18 @@ class AttentionAggregator:
         if model_name == "jinaai/jina-embeddings-v3":
             model_name = "jinaai/jina-embeddings-v2-base-en"
 
+        # Prefer lower precision on accelerator to cut memory
+        torch_dtype = None
+        if isinstance(self.device, str) and self.device.startswith("cuda"):
+            torch_dtype = torch.bfloat16
+        elif isinstance(self.device, str) and self.device.startswith("mps"):
+            torch_dtype = torch.float16
+
         self.model = AutoModel.from_pretrained(
-            model_name, trust_remote_code=True, attn_implementation="eager"
+            model_name,
+            trust_remote_code=True,
+            attn_implementation="eager",
+            torch_dtype=torch_dtype,
         )
         self.model.eval()
         self.model.to(self.device)
