@@ -8,19 +8,19 @@ set -e  # Exit on any error
 echo "Starting..."
 
 # Validate and build language suffix (supports 1 or 2 ISO-639-1 codes)
-if [[ $# -lt 1 || $# -gt 2 ]]; then
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 	echo "Usage: $0 <ll> [ll]" >&2
 	exit 1
 fi
 
 for arg in "$@"; do
-	if [[ ! "$arg" =~ ^[a-z]{2}$ ]]; then
-		echo "Error: language codes must be two lowercase letters (e.g., en, de, hi). Got: '$arg'" >&2
-		exit 1
-	fi
+	case "$arg" in
+		[a-z][a-z]) ;;
+		*) echo "Error: language codes must be two lowercase letters (e.g., en, de, hi). Got: '$arg'" >&2; exit 1 ;;
+	esac
 done
 
-if [[ $# -eq 1 ]]; then
+if [ "$#" -eq 1 ]; then
 	LANG_SUFFIX="$1"
 else
 	LANG_SUFFIX="$1_$2"
