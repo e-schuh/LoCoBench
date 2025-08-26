@@ -190,6 +190,8 @@ class AttentionAggregator:
             return_dict=True,
         )
         attentions = outputs.attentions
+        # Drop the container to avoid holding extra references on GPU
+        del outputs
         assert isinstance(attentions, (list, tuple)) and len(attentions) > 0
 
         num_layers = len(attentions)
@@ -208,6 +210,8 @@ class AttentionAggregator:
             mask_i = attention_mask[i]  # [L]
             valid_idx = mask_i.nonzero(as_tuple=False).squeeze(-1)
             assert valid_idx.numel() > 0
+            # Work with CPU indices for attention slicing to avoid GPU temporaries
+            valid_idx_cpu = valid_idx.cpu()
 
             # Compress to only valid tokens (keep order)
             L_eff = valid_idx.numel()
@@ -218,17 +222,18 @@ class AttentionAggregator:
             # If only_from_first_token: use only query at first valid position
             per_layer_vecs: List[torch.Tensor] = []  # each [L_eff]
             for l in range(num_layers):
-                a = attentions[l][i]  # [H, L, L]
+                # Move per-layer attention to CPU before slicing/indexing
+                a_cpu = attentions[l][i].to("cpu", non_blocking=True)  # [H, L, L]
                 if not self.only_from_first_token:
                     # Sum over queries -> keep keys dimension
-                    incoming = a.sum(dim=1)  # [H, L]
-                    incoming_valid = incoming[:, valid_idx]  # [H, L_eff]
+                    incoming = a_cpu.sum(dim=1)  # [H, L]
+                    incoming_valid = incoming[:, valid_idx_cpu]  # [H, L_eff]
                     vec = incoming_valid.mean(dim=0)  # [L_eff]
                 else:
                     # Take attention from first valid query position only
-                    q_pos = int(valid_idx[0].item())
-                    row = a[:, q_pos, :]  # [H, L]
-                    row_valid = row[:, valid_idx]  # [H, L_eff]
+                    q_pos = int(valid_idx_cpu[0].item())
+                    row = a_cpu[:, q_pos, :]  # [H, L]
+                    row_valid = row[:, valid_idx_cpu]  # [H, L_eff]
                     vec = row_valid.mean(dim=0)  # [L_eff]
                 assert vec.shape == (L_eff,)
 
@@ -246,6 +251,8 @@ class AttentionAggregator:
                 self.count_last[l] += 1.0
 
                 per_layer_vecs.append(vec)
+                # Free per-layer CPU tensor early
+                del a_cpu
 
             # Optionally exclude first token (e.g., [CLS]/BOS)
             if self.exclude_first_token:
@@ -269,20 +276,26 @@ class AttentionAggregator:
             if self.exclude_last_token:
                 eff_idx = eff_idx[:-1]
             assert eff_idx.numel() == L_eff
+            eff_idx_cpu = eff_idx.cpu()
 
             # Compute averaged attention map over heads and layers on the trimmed span
             # Note: we ignore only_from_first_token for 2D maps and always use all source positions
             M = None  # [L_eff, L_eff]
             for l in range(num_layers):
-                a = attentions[l][i]  # [H, L, L]
+                # Move per-layer attention to CPU before slicing/indexing
+                a_cpu = attentions[l][i].to("cpu", non_blocking=True)  # [H, L, L]
                 # slice both source (rows) and target (cols)
-                a_trim = a[:, eff_idx, :][:, :, eff_idx]  # [H, L_eff, L_eff]
+                a_trim = a_cpu[:, eff_idx_cpu, :][
+                    :, :, eff_idx_cpu
+                ]  # [H, L_eff, L_eff]
                 assert a_trim.shape[1] == L_eff and a_trim.shape[2] == L_eff
                 a_mean_h = a_trim.mean(dim=0)  # [L_eff, L_eff]
                 if M is None:
                     M = a_mean_h.to(dtype=torch.float32)
                 else:
                     M = M + a_mean_h.to(dtype=torch.float32)
+                # Free per-layer CPU tensor early
+                del a_cpu
             assert M is not None
             M = M / float(num_layers)  # average over layers
 

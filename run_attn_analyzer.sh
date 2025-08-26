@@ -28,7 +28,7 @@ fi
 
 CONFIG_DIR="config/Alibaba_mGTE/wiki_parallel"
 
-for i in 1 2 3 4; do
+for i in 4 3 2 1; do
 	CONFIG_PATH="${CONFIG_DIR}/embedding_config_wiki_parallel_${i}_${LANG_SUFFIX}.json"
 
 	echo "${i}; only first token"
