@@ -165,6 +165,14 @@ class AttentionAggregator:
         self.sum_last: Optional[torch.Tensor] = None
         self.count_last: Optional[torch.Tensor] = None
 
+        # Basket-aggregated attention map accumulators (averaged over heads and layers)
+        # Absolute (dynamic number of bins): [B_max, B_max]
+        self.map_abs_sum = None
+        self.map_abs_count = None
+        # Relative (fixed rel_bins): [rel_bins, rel_bins]
+        self.map_rel_sum = None
+        self.map_rel_count = None
+
         self.examples_seen = 0
 
     @torch.no_grad()
@@ -254,9 +262,35 @@ class AttentionAggregator:
                 self.examples_seen += 1
                 continue
 
+            # Build effective index list consistent with the vector trimming for map computation
+            eff_idx = valid_idx
+            if self.exclude_first_token:
+                eff_idx = eff_idx[1:]
+            if self.exclude_last_token:
+                eff_idx = eff_idx[:-1]
+            assert eff_idx.numel() == L_eff
+
+            # Compute averaged attention map over heads and layers on the trimmed span
+            # Note: we ignore only_from_first_token for 2D maps and always use all source positions
+            M = None  # [L_eff, L_eff]
+            for l in range(num_layers):
+                a = attentions[l][i]  # [H, L, L]
+                # slice both source (rows) and target (cols)
+                a_trim = a[:, eff_idx, :][:, :, eff_idx]  # [H, L_eff, L_eff]
+                assert a_trim.shape[1] == L_eff and a_trim.shape[2] == L_eff
+                a_mean_h = a_trim.mean(dim=0)  # [L_eff, L_eff]
+                if M is None:
+                    M = a_mean_h.to(dtype=torch.float32)
+                else:
+                    M = M + a_mean_h.to(dtype=torch.float32)
+            assert M is not None
+            M = M / float(num_layers)  # average over layers
+
             if self.analysis_mode == "baskets":
                 self._accumulate_baskets_absolute(per_layer_vecs)
                 self._accumulate_baskets_relative(per_layer_vecs)
+                self._accumulate_maps_absolute(M)
+                self._accumulate_maps_relative(M)
             else:
                 # Article-level using doc_boundaries
                 raw_bounds = batch["doc_boundaries"][i]
@@ -349,6 +383,39 @@ class AttentionAggregator:
             assert self.sum_rel.shape == (self.num_layers, L_bins)
             assert self.count_rel.shape == (self.num_layers, L_bins)
 
+    def _ensure_map_abs_buffers(self, bins: int) -> None:
+        if self.map_abs_sum is None:
+            self.map_abs_sum = torch.zeros(bins, bins, dtype=torch.float32)
+            self.map_abs_count = torch.zeros(bins, bins, dtype=torch.float32)
+        else:
+            B_old = self.map_abs_sum.shape[0]
+            if bins > B_old:
+                pad = bins - B_old
+                pad_rows = torch.zeros(pad, B_old, dtype=torch.float32)
+                pad_cols = torch.zeros(bins, pad, dtype=torch.float32)
+                # expand sum
+                self.map_abs_sum = torch.cat([self.map_abs_sum, pad_rows], dim=0)
+                self.map_abs_sum = torch.cat([self.map_abs_sum, pad_cols], dim=1)
+                # expand count
+                self.map_abs_count = torch.cat(
+                    [self.map_abs_count, pad_rows.clone()], dim=0
+                )
+                self.map_abs_count = torch.cat(
+                    [self.map_abs_count, pad_cols.clone()], dim=1
+                )
+
+    def _ensure_map_rel_buffers(self) -> None:
+        if self.map_rel_sum is None:
+            self.map_rel_sum = torch.zeros(
+                self.rel_bins, self.rel_bins, dtype=torch.float32
+            )
+            self.map_rel_count = torch.zeros(
+                self.rel_bins, self.rel_bins, dtype=torch.float32
+            )
+        else:
+            assert self.map_rel_sum.shape == (self.rel_bins, self.rel_bins)
+            assert self.map_rel_count.shape == (self.rel_bins, self.rel_bins)
+
     def _accumulate_baskets_absolute(self, per_layer_vecs: List[torch.Tensor]) -> None:
         # per_layer_vecs: list of [L_eff]
         L_eff = per_layer_vecs[0].shape[0]
@@ -421,6 +488,54 @@ class AttentionAggregator:
                 self.sum_abs[l, a_idx] += float(seg.mean())
                 self.count_abs[l, a_idx] += 1.0
 
+    def _accumulate_maps_absolute(self, M: torch.Tensor) -> None:
+        # M: [L_eff, L_eff], averaged over heads and layers
+        assert M.dim() == 2 and M.shape[0] == M.shape[1]
+        L_eff = M.shape[0]
+        num_bins = (L_eff + self.basket_size - 1) // self.basket_size
+        self._ensure_map_abs_buffers(num_bins)
+        for bs in range(num_bins):
+            rs = bs * self.basket_size
+            re = min((bs + 1) * self.basket_size, L_eff)
+            if re <= rs:
+                continue
+            for bt in range(num_bins):
+                cs = bt * self.basket_size
+                ce = min((bt + 1) * self.basket_size, L_eff)
+                if ce <= cs:
+                    continue
+                block = M[rs:re, cs:ce]
+                val = float(block.mean())
+                self.map_abs_sum[bs, bt] += val
+                self.map_abs_count[bs, bt] += 1.0
+
+    def _accumulate_maps_relative(self, M: torch.Tensor) -> None:
+        # M: [L_eff, L_eff], averaged over heads and layers
+        assert M.dim() == 2 and M.shape[0] == M.shape[1]
+        L_eff = M.shape[0]
+        assert L_eff >= self.rel_bins
+        self._ensure_map_rel_buffers()
+        edges = torch.linspace(0, L_eff, steps=self.rel_bins + 1)
+        edges = torch.floor(edges).to(torch.int64)
+        edges[-1] = L_eff
+        for k in range(1, edges.numel()):
+            if edges[k] <= edges[k - 1]:
+                edges[k] = min(edges[k - 1] + 1, L_eff)
+        for bs in range(self.rel_bins):
+            rs = int(edges[bs].item())
+            re = int(edges[bs + 1].item())
+            if re <= rs:
+                continue
+            for bt in range(self.rel_bins):
+                cs = int(edges[bt].item())
+                ce = int(edges[bt + 1].item())
+                if ce <= cs:
+                    continue
+                block = M[rs:re, cs:ce]
+                val = float(block.mean())
+                self.map_rel_sum[bs, bt] += val
+                self.map_rel_count[bs, bt] += 1.0
+
     def finalize(self) -> Dict[str, Any]:
         assert self.num_layers is not None
         result: Dict[str, Any] = {
@@ -466,6 +581,21 @@ class AttentionAggregator:
             assert self.sum_rel is not None and self.count_rel is not None
             means_abs = (self.sum_abs / self.count_abs.clamp_min(1.0)).tolist()
             means_rel = (self.sum_rel / self.count_rel.clamp_min(1.0)).tolist()
+            # Compute attention maps means (set NaNs where count==0)
+            maps_abs = None
+            maps_abs_counts = None
+            if self.map_abs_sum is not None and self.map_abs_count is not None:
+                maps_abs = (
+                    self.map_abs_sum / self.map_abs_count.clamp_min(1.0)
+                ).tolist()
+                maps_abs_counts = self.map_abs_count.tolist()
+            maps_rel = None
+            maps_rel_counts = None
+            if self.map_rel_sum is not None and self.map_rel_count is not None:
+                maps_rel = (
+                    self.map_rel_sum / self.map_rel_count.clamp_min(1.0)
+                ).tolist()
+                maps_rel_counts = self.map_rel_count.tolist()
             result.update(
                 {
                     "baskets_absolute": {
@@ -479,6 +609,25 @@ class AttentionAggregator:
                         "per_layer_bin_means": means_rel,
                         "counts": self.count_rel.tolist(),
                     },
+                    "maps_absolute": (
+                        {
+                            "basket_size": self.basket_size,
+                            "num_bins": None if maps_abs is None else len(maps_abs),
+                            "per_bin_pair_means": maps_abs,
+                            "counts": maps_abs_counts,
+                        }
+                        if maps_abs is not None
+                        else None
+                    ),
+                    "maps_relative": (
+                        {
+                            "num_bins": None if maps_rel is None else len(maps_rel),
+                            "per_bin_pair_means": maps_rel,
+                            "counts": maps_rel_counts,
+                        }
+                        if maps_rel is not None
+                        else None
+                    ),
                 }
             )
         return result
