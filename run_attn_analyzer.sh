@@ -7,26 +7,33 @@ set -e  # Exit on any error
 
 echo "Starting..."
 
-echo "1; only first token"
-poetry run python -m locobench.attention.attention_analyzer --config config/Alibaba_mGTE/wiki_parallel/embedding_config_wiki_parallel_1_de.json --analysis_mode baskets --basket_size 128 --only_from_first_token --batch_size 1
+# Validate and build language suffix (supports 1 or 2 ISO-639-1 codes)
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+	echo "Usage: $0 <ll> [ll]" >&2
+	exit 1
+fi
 
-echo "1; all tokens"
-poetry run python -m locobench.attention.attention_analyzer --config config/Alibaba_mGTE/wiki_parallel/embedding_config_wiki_parallel_1_de.json --analysis_mode baskets --basket_size 128 --batch_size 1
+for arg in "$@"; do
+	if [[ ! "$arg" =~ ^[a-z]{2}$ ]]; then
+		echo "Error: language codes must be two lowercase letters (e.g., en, de, hi). Got: '$arg'" >&2
+		exit 1
+	fi
+done
 
-echo "2; only first token"
-poetry run python -m locobench.attention.attention_analyzer --config config/Alibaba_mGTE/wiki_parallel/embedding_config_wiki_parallel_2_de.json --analysis_mode baskets --basket_size 128 --only_from_first_token --batch_size 1
+if [[ $# -eq 1 ]]; then
+	LANG_SUFFIX="$1"
+else
+	LANG_SUFFIX="$1_$2"
+fi
 
-echo "2; all tokens"
-poetry run python -m locobench.attention.attention_analyzer --config config/Alibaba_mGTE/wiki_parallel/embedding_config_wiki_parallel_2_de.json --analysis_mode baskets --basket_size 128 --batch_size 1
+CONFIG_DIR="config/Alibaba_mGTE/wiki_parallel"
 
-echo "3; only first token"
-poetry run python -m locobench.attention.attention_analyzer --config config/Alibaba_mGTE/wiki_parallel/embedding_config_wiki_parallel_3_de.json --analysis_mode baskets --basket_size 128 --only_from_first_token --batch_size 1
+for i in 1 2 3 4; do
+	CONFIG_PATH="${CONFIG_DIR}/embedding_config_wiki_parallel_${i}_${LANG_SUFFIX}.json"
 
-echo "3; all tokens"
-poetry run python -m locobench.attention.attention_analyzer --config config/Alibaba_mGTE/wiki_parallel/embedding_config_wiki_parallel_3_de.json --analysis_mode baskets --basket_size 128 --batch_size 1
+	echo "${i}; only first token"
+	poetry run python -m locobench.attention.attention_analyzer --config "${CONFIG_PATH}" --analysis_mode baskets --basket_size 128 --only_from_first_token --batch_size 1
 
-echo "4; only first token"
-poetry run python -m locobench.attention.attention_analyzer --config config/Alibaba_mGTE/wiki_parallel/embedding_config_wiki_parallel_4_de.json --analysis_mode baskets --basket_size 128 --only_from_first_token --batch_size 1
-
-echo "4; all tokens"
-poetry run python -m locobench.attention.attention_analyzer --config config/Alibaba_mGTE/wiki_parallel/embedding_config_wiki_parallel_4_de.json --analysis_mode baskets --basket_size 128 --batch_size 1
+	echo "${i}; all tokens"
+	poetry run python -m locobench.attention.attention_analyzer --config "${CONFIG_PATH}" --analysis_mode baskets --basket_size 128 --batch_size 1
+done
