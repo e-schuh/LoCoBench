@@ -38,6 +38,7 @@ class AnalysisConfig:
     device: Optional[str] = None
     only_from_first_token: bool = False
     compute_maps: bool = True
+    compute_incoming: bool = True
 
 
 def _load_json(path: str) -> Dict[str, Any]:
@@ -109,6 +110,7 @@ class AttentionAggregator:
         exclude_last_token: bool,
         only_from_first_token: bool,
         compute_maps: bool,
+        compute_incoming: bool,
     ) -> None:
         assert analysis_mode in ("baskets", "articles")
 
@@ -147,6 +149,7 @@ class AttentionAggregator:
         self.exclude_last_token = exclude_last_token
         self.only_from_first_token = only_from_first_token
         self.compute_maps = compute_maps
+        self.compute_incoming = compute_incoming
 
         # Aggregation state
         self.num_layers: Optional[int] = None
@@ -208,78 +211,74 @@ class AttentionAggregator:
         else:
             assert self.num_layers == num_layers
 
-        # For each example in batch, compute reduced incoming attention vector per layer
+        # For each example in batch, compute reduced incoming attention vector per layer (optional)
         for i in range(bsz):
             mask_i = attention_mask[i]  # [L]
             valid_idx = mask_i.nonzero(as_tuple=False).squeeze(-1)
             assert valid_idx.numel() > 0
 
-            # Compress to only valid tokens (keep order)
-            L_eff = valid_idx.numel()
-            # No fixed-length requirement; we aggregate with masking (absolute) and percentiles (relative)
-
-            # Build per-layer vector per valid target position
-            # Default: incoming[j] = sum over queries of A[query->key=j]
-            # If only_from_first_token: use only query at first valid position
-            per_layer_vecs: List[torch.Tensor] = []  # each [L_eff]
-            for l in range(num_layers):
-                a = attentions[l][i]  # [H, L, L]
-                if not self.only_from_first_token:
-                    # Sum over queries -> keep keys dimension
-                    incoming = a.sum(dim=1)  # [H, L]
-                    incoming_valid = incoming[:, valid_idx]  # [H, L_eff]
-                    vec = incoming_valid.mean(dim=0)  # [L_eff]
-                else:
-                    # Take attention from first valid query position only
-                    q_pos = int(valid_idx[0].item())
-                    row = a[:, q_pos, :]  # [H, L]
-                    row_valid = row[:, valid_idx]  # [H, L_eff]
-                    vec = row_valid.mean(dim=0)  # [L_eff]
-                assert vec.shape == (L_eff,)
-
-                # Accumulate first/last token attention per layer (before trimming)
-                first_val = float(vec[0].item())
-                last_val = float(vec[-1].item())
-                if self.sum_first is None:
-                    self.sum_first = torch.zeros(num_layers, dtype=torch.float32)
-                    self.count_first = torch.zeros(num_layers, dtype=torch.float32)
-                    self.sum_last = torch.zeros(num_layers, dtype=torch.float32)
-                    self.count_last = torch.zeros(num_layers, dtype=torch.float32)
-                self.sum_first[l] += first_val
-                self.count_first[l] += 1.0
-                self.sum_last[l] += last_val
-                self.count_last[l] += 1.0
-
-                per_layer_vecs.append(vec)
-
-                del a
-
-            # Optionally exclude first token (e.g., [CLS]/BOS)
-            if self.exclude_first_token:
-                per_layer_vecs = [v[1:] for v in per_layer_vecs]
-                L_eff = per_layer_vecs[0].shape[0]
-
-            # Optionally exclude last token (e.g., trailing SEP/EOS)
-            if self.exclude_last_token:
-                per_layer_vecs = [v[:-1] for v in per_layer_vecs]
-                L_eff = per_layer_vecs[0].shape[0]
-
-            # If exclusions removed all targets, skip main aggregation but keep first/last
-            if L_eff == 0:
-                self.examples_seen += 1
-                continue
-
-            # Build effective index list consistent with the vector trimming for map computation
+            # Build effective index list consistent with exclusions for map computation
             eff_idx = valid_idx
             if self.exclude_first_token:
                 eff_idx = eff_idx[1:]
             if self.exclude_last_token:
                 eff_idx = eff_idx[:-1]
-            assert eff_idx.numel() == L_eff
+            L_eff = eff_idx.numel()
+            # If exclusions removed all targets, skip
+            if L_eff == 0:
+                self.examples_seen += 1
+                continue
+
+            # Build per-layer vector per valid target position
+            # Default: incoming[j] = sum over queries of A[query->key=j]
+            # If only_from_first_token: use only query at first valid position
+            per_layer_vecs: Optional[List[torch.Tensor]] = None
+            if self.compute_incoming:
+                per_layer_vecs = []  # each length valid_idx
+                L_valid = valid_idx.numel()
+                for l in range(num_layers):
+                    a = attentions[l][i]  # [H, L, L]
+                    if not self.only_from_first_token:
+                        incoming = a.sum(dim=1)  # [H, L]
+                        incoming_valid = incoming[:, valid_idx]  # [H, L_valid]
+                        vec = incoming_valid.mean(dim=0)  # [L_valid]
+                    else:
+                        q_pos = int(valid_idx[0].item())
+                        row = a[:, q_pos, :]  # [H, L]
+                        row_valid = row[:, valid_idx]  # [H, L_valid]
+                        vec = row_valid.mean(dim=0)  # [L_valid]
+                    assert vec.shape == (L_valid,)
+
+                    # Accumulate first/last token attention per layer (before trimming)
+                    first_val = float(vec[0].item())
+                    last_val = float(vec[-1].item())
+                    if self.sum_first is None:
+                        self.sum_first = torch.zeros(num_layers, dtype=torch.float32)
+                        self.count_first = torch.zeros(num_layers, dtype=torch.float32)
+                        self.sum_last = torch.zeros(num_layers, dtype=torch.float32)
+                        self.count_last = torch.zeros(num_layers, dtype=torch.float32)
+                    self.sum_first[l] += first_val
+                    self.count_first[l] += 1.0
+                    self.sum_last[l] += last_val
+                    self.count_last[l] += 1.0
+
+                    per_layer_vecs.append(vec)
+
+                    del a
+
+                # Apply exclusions to vectors
+                if self.exclude_first_token:
+                    per_layer_vecs = [v[1:] for v in per_layer_vecs]
+                if self.exclude_last_token:
+                    per_layer_vecs = [v[:-1] for v in per_layer_vecs]
+                # Ensure trimmed length matches eff_idx
+                assert per_layer_vecs[0].shape[0] == L_eff
 
             if self.analysis_mode == "baskets":
-                self._accumulate_baskets_absolute(per_layer_vecs)
-                self._accumulate_baskets_relative(per_layer_vecs)
+                if self.compute_incoming:
+                    assert per_layer_vecs is not None
+                    self._accumulate_baskets_absolute(per_layer_vecs)
+                    self._accumulate_baskets_relative(per_layer_vecs)
                 # Optionally compute attention maps
                 if self.compute_maps:
                     # Precompute bin ranges once per example
@@ -315,6 +314,10 @@ class AttentionAggregator:
                     )
             else:
                 # Article-level using doc_boundaries
+                if not self.compute_incoming:
+                    # Articles require incoming vectors; maps are not defined here
+                    self.examples_seen += 1
+                    continue
                 raw_bounds = batch["doc_boundaries"][i]
                 # Convert to tensor deterministically; fail fast on unknown types
                 if isinstance(raw_bounds, torch.Tensor):
@@ -373,6 +376,7 @@ class AttentionAggregator:
                 else:
                     assert self.num_articles == len(spans)
 
+                assert per_layer_vecs is not None
                 self._accumulate_articles(per_layer_vecs, spans)
 
             self.examples_seen += 1
@@ -779,6 +783,7 @@ def analyze_from_config(args: AnalysisConfig) -> Dict[str, Any]:
         exclude_last_token=args.exclude_last_token,
         only_from_first_token=args.only_from_first_token,
         compute_maps=args.compute_maps,
+        compute_incoming=args.compute_incoming,
     )
 
     max_examples = args.max_examples
@@ -893,6 +898,11 @@ def _parse_args() -> AnalysisConfig:
         action="store_true",
         help="Exclude attention map computation to reduce VRAM and runtime (baskets mode only)",
     )
+    p.add_argument(
+        "--exclude_incoming",
+        action="store_true",
+        help="Exclude incoming attention vector computations; only compute attention maps (baskets mode)",
+    )
     a = p.parse_args()
     return AnalysisConfig(
         config_path=a.config,
@@ -906,6 +916,7 @@ def _parse_args() -> AnalysisConfig:
         device=a.device,
         only_from_first_token=bool(a.only_from_first_token),
         compute_maps=not bool(a.exclude_maps),
+        compute_incoming=not bool(a.exclude_incoming),
     )
 
 
