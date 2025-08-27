@@ -274,27 +274,16 @@ class AttentionAggregator:
                 eff_idx = eff_idx[:-1]
             assert eff_idx.numel() == L_eff
 
-            # Compute averaged attention map over heads and layers on the trimmed span
-            # Note: we ignore only_from_first_token for 2D maps and always use all source positions
-            M = None  # [L_eff, L_eff]
-            for l in range(num_layers):
-                a = attentions[l][i]  # [H, L, L]
-                # slice both source (rows) and target (cols)
-                a_trim = a[:, eff_idx, :][:, :, eff_idx]  # [H, L_eff, L_eff]
-                assert a_trim.shape[1] == L_eff and a_trim.shape[2] == L_eff
-                a_mean_h = a_trim.mean(dim=0)  # [L_eff, L_eff]
-                if M is None:
-                    M = a_mean_h.to(dtype=torch.float32)
-                else:
-                    M = M + a_mean_h.to(dtype=torch.float32)
-            assert M is not None
-            M = M / float(num_layers)  # average over layers
-
             if self.analysis_mode == "baskets":
                 self._accumulate_baskets_absolute(per_layer_vecs)
                 self._accumulate_baskets_relative(per_layer_vecs)
-                self._accumulate_maps_absolute(M)
-                self._accumulate_maps_relative(M)
+                # Stream per-bin map means directly from attentions to avoid L_eff x L_eff tensors on GPU
+                self._accumulate_maps_absolute_stream(
+                    attentions, i, eff_idx, num_layers
+                )
+                self._accumulate_maps_relative_stream(
+                    attentions, i, eff_idx, num_layers
+                )
             else:
                 # Article-level using doc_boundaries
                 raw_bounds = batch["doc_boundaries"][i]
@@ -537,6 +526,85 @@ class AttentionAggregator:
                     continue
                 block = M[rs:re, cs:ce]
                 val = float(block.mean())
+                self.map_rel_sum[bs, bt] += val
+                self.map_rel_count[bs, bt] += 1.0
+
+    def _accumulate_maps_absolute_stream(
+        self,
+        attentions: List[torch.Tensor],
+        i: int,
+        eff_idx: torch.Tensor,
+        num_layers: int,
+    ) -> None:
+        # Compute absolute basket-pair means without building full L_eff x L_eff maps on GPU
+        L_eff = eff_idx.numel()
+        num_bins = (L_eff + self.basket_size - 1) // self.basket_size
+        self._ensure_map_abs_buffers(num_bins)
+
+        for bs in range(num_bins):
+            rs = bs * self.basket_size
+            re = min((bs + 1) * self.basket_size, L_eff)
+            if re <= rs:
+                continue
+            rows = eff_idx[rs:re]
+            for bt in range(num_bins):
+                cs = bt * self.basket_size
+                ce = min((bt + 1) * self.basket_size, L_eff)
+                if ce <= cs:
+                    continue
+                cols = eff_idx[cs:ce]
+
+                # Average over layers and heads, then over rows/cols -> scalar
+                acc = 0.0
+                for l in range(num_layers):
+                    a = attentions[l][i]  # [H, L, L]
+                    block = a[:, rows, :][:, :, cols]  # [H, r, c]
+                    acc += float(block.mean().item())
+                    del block
+                    del a
+                val = acc / float(num_layers)
+                self.map_abs_sum[bs, bt] += val
+                self.map_abs_count[bs, bt] += 1.0
+
+    def _accumulate_maps_relative_stream(
+        self,
+        attentions: List[torch.Tensor],
+        i: int,
+        eff_idx: torch.Tensor,
+        num_layers: int,
+    ) -> None:
+        # Compute relative percentile basket-pair means streaming without building full maps
+        L_eff = eff_idx.numel()
+        assert L_eff >= self.rel_bins
+        self._ensure_map_rel_buffers()
+        edges = torch.linspace(0, L_eff, steps=self.rel_bins + 1)
+        edges = torch.floor(edges).to(torch.int64)
+        edges[-1] = L_eff
+        for k in range(1, edges.numel()):
+            if edges[k] <= edges[k - 1]:
+                edges[k] = min(edges[k - 1] + 1, L_eff)
+
+        for bs in range(self.rel_bins):
+            rs = int(edges[bs].item())
+            re = int(edges[bs + 1].item())
+            if re <= rs:
+                continue
+            rows = eff_idx[rs:re]
+            for bt in range(self.rel_bins):
+                cs = int(edges[bt].item())
+                ce = int(edges[bt + 1].item())
+                if ce <= cs:
+                    continue
+                cols = eff_idx[cs:ce]
+
+                acc = 0.0
+                for l in range(num_layers):
+                    a = attentions[l][i]  # [H, L, L]
+                    block = a[:, rows, :][:, :, cols]  # [H, r, c]
+                    acc += float(block.mean().item())
+                    del block
+                    del a
+                val = acc / float(num_layers)
                 self.map_rel_sum[bs, bt] += val
                 self.map_rel_count[bs, bt] += 1.0
 
