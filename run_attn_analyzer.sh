@@ -35,5 +35,5 @@ for i in 4 3 2 1; do
 	poetry run python -m locobench.attention.attention_analyzer --config "${CONFIG_PATH}" --analysis_mode baskets --basket_size 128 --only_from_first_token --batch_size 1
 
 	echo "${i}; all tokens"
-	poetry run python -m locobench.attention.attention_analyzer --config "${CONFIG_PATH}" --analysis_mode baskets --basket_size 128 --batch_size 1
+	poetry run python -m locobench.attention.attention_analyzer --config "${CONFIG_PATH}" --analysis_mode baskets --basket_size 128 --batch_size 1 --exclude_maps
 done

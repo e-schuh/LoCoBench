@@ -37,6 +37,7 @@ class AnalysisConfig:
     batch_size: Optional[int] = None
     device: Optional[str] = None
     only_from_first_token: bool = False
+    compute_maps: bool = True
 
 
 def _load_json(path: str) -> Dict[str, Any]:
@@ -107,6 +108,7 @@ class AttentionAggregator:
         exclude_first_token: bool,
         exclude_last_token: bool,
         only_from_first_token: bool,
+        compute_maps: bool,
     ) -> None:
         assert analysis_mode in ("baskets", "articles")
 
@@ -144,6 +146,7 @@ class AttentionAggregator:
         self.exclude_first_token = exclude_first_token
         self.exclude_last_token = exclude_last_token
         self.only_from_first_token = only_from_first_token
+        self.compute_maps = compute_maps
 
         # Aggregation state
         self.num_layers: Optional[int] = None
@@ -277,13 +280,15 @@ class AttentionAggregator:
             if self.analysis_mode == "baskets":
                 self._accumulate_baskets_absolute(per_layer_vecs)
                 self._accumulate_baskets_relative(per_layer_vecs)
-                # Stream per-bin map means directly from attentions to avoid L_eff x L_eff tensors on GPU
-                self._accumulate_maps_absolute_stream(
-                    attentions, i, eff_idx, num_layers
-                )
-                self._accumulate_maps_relative_stream(
-                    attentions, i, eff_idx, num_layers
-                )
+                # Optionally compute attention maps
+                if self.compute_maps:
+                    # Stream per-bin map means directly from attentions to avoid L_eff x L_eff tensors on GPU
+                    self._accumulate_maps_absolute_stream(
+                        attentions, i, eff_idx, num_layers
+                    )
+                    self._accumulate_maps_relative_stream(
+                        attentions, i, eff_idx, num_layers
+                    )
             else:
                 # Article-level using doc_boundaries
                 raw_bounds = batch["doc_boundaries"][i]
@@ -615,6 +620,7 @@ class AttentionAggregator:
             "exclude_first_token": self.exclude_first_token,
             "exclude_last_token": self.exclude_last_token,
             "only_from_first_token": self.only_from_first_token,
+            "compute_maps": self.compute_maps,
             "num_layers": self.num_layers,
             "examples_seen": self.examples_seen,
         }
@@ -725,6 +731,7 @@ def analyze_from_config(args: AnalysisConfig) -> Dict[str, Any]:
         exclude_first_token=args.exclude_first_token,
         exclude_last_token=args.exclude_last_token,
         only_from_first_token=args.only_from_first_token,
+        compute_maps=args.compute_maps,
     )
 
     max_examples = args.max_examples
@@ -834,6 +841,11 @@ def _parse_args() -> AnalysisConfig:
         action="store_true",
         help="If set, compute contributions using only the first token as source (CLS/<s>)",
     )
+    p.add_argument(
+        "--exclude_maps",
+        action="store_true",
+        help="Exclude attention map computation to reduce VRAM and runtime (baskets mode only)",
+    )
     a = p.parse_args()
     return AnalysisConfig(
         config_path=a.config,
@@ -846,6 +858,7 @@ def _parse_args() -> AnalysisConfig:
         batch_size=a.batch_size,
         device=a.device,
         only_from_first_token=bool(a.only_from_first_token),
+        compute_maps=not bool(a.exclude_maps),
     )
 
 
