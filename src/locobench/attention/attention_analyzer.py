@@ -672,6 +672,7 @@ class AttentionAggregator:
             "exclude_last_token": self.exclude_last_token,
             "only_from_first_token": self.only_from_first_token,
             "compute_maps": self.compute_maps,
+            "compute_incoming": self.compute_incoming,
             "num_layers": self.num_layers,
             "examples_seen": self.examples_seen,
         }
@@ -694,50 +695,76 @@ class AttentionAggregator:
             )
 
         if self.analysis_mode == "articles":
-            assert self.sum_abs is not None and self.count_abs is not None
-            means_abs = (self.sum_abs / self.count_abs.clamp_min(1.0)).tolist()
-            result.update(
-                {
-                    "articles": {
-                        "num_articles": self.sum_abs.shape[1],
-                        "per_layer_article_means": means_abs,
-                        "counts": self.count_abs.tolist(),
-                    }
+            # Only emit article aggregates when incoming vectors were computed
+            articles_section = None
+            if (
+                self.compute_incoming
+                and self.sum_abs is not None
+                and self.count_abs is not None
+            ):
+                means_abs = (self.sum_abs / self.count_abs.clamp_min(1.0)).tolist()
+                articles_section = {
+                    "num_articles": self.sum_abs.shape[1],
+                    "per_layer_article_means": means_abs,
+                    "counts": self.count_abs.tolist(),
                 }
-            )
+            result.update({"articles": articles_section})
         else:
-            assert self.sum_abs is not None and self.count_abs is not None
-            assert self.sum_rel is not None and self.count_rel is not None
-            means_abs = (self.sum_abs / self.count_abs.clamp_min(1.0)).tolist()
-            means_rel = (self.sum_rel / self.count_rel.clamp_min(1.0)).tolist()
-            # Compute attention maps means (set NaNs where count==0)
+            # Baskets mode: build sections conditionally
+            baskets_absolute = None
+            baskets_relative = None
+            if (
+                self.compute_incoming
+                and self.sum_abs is not None
+                and self.count_abs is not None
+            ):
+                means_abs = (self.sum_abs / self.count_abs.clamp_min(1.0)).tolist()
+                baskets_absolute = {
+                    "basket_size": self.basket_size,
+                    "num_bins": self.sum_abs.shape[1],
+                    "per_layer_bin_means": means_abs,
+                    "counts": self.count_abs.tolist(),
+                }
+            if (
+                self.compute_incoming
+                and self.sum_rel is not None
+                and self.count_rel is not None
+            ):
+                means_rel = (self.sum_rel / self.count_rel.clamp_min(1.0)).tolist()
+                baskets_relative = {
+                    "num_bins": self.sum_rel.shape[1],
+                    "per_layer_bin_means": means_rel,
+                    "counts": self.count_rel.tolist(),
+                }
+
+            # Compute attention maps means when present
             maps_abs = None
             maps_abs_counts = None
-            if self.map_abs_sum is not None and self.map_abs_count is not None:
+            if (
+                self.compute_maps
+                and self.map_abs_sum is not None
+                and self.map_abs_count is not None
+            ):
                 maps_abs = (
                     self.map_abs_sum / self.map_abs_count.clamp_min(1.0)
                 ).tolist()
                 maps_abs_counts = self.map_abs_count.tolist()
             maps_rel = None
             maps_rel_counts = None
-            if self.map_rel_sum is not None and self.map_rel_count is not None:
+            if (
+                self.compute_maps
+                and self.map_rel_sum is not None
+                and self.map_rel_count is not None
+            ):
                 maps_rel = (
                     self.map_rel_sum / self.map_rel_count.clamp_min(1.0)
                 ).tolist()
                 maps_rel_counts = self.map_rel_count.tolist()
+
             result.update(
                 {
-                    "baskets_absolute": {
-                        "basket_size": self.basket_size,
-                        "num_bins": self.sum_abs.shape[1],
-                        "per_layer_bin_means": means_abs,
-                        "counts": self.count_abs.tolist(),
-                    },
-                    "baskets_relative": {
-                        "num_bins": self.sum_rel.shape[1],
-                        "per_layer_bin_means": means_rel,
-                        "counts": self.count_rel.tolist(),
-                    },
+                    "baskets_absolute": baskets_absolute,
+                    "baskets_relative": baskets_relative,
                     "maps_absolute": (
                         {
                             "basket_size": self.basket_size,
