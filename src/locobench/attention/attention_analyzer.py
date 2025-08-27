@@ -282,12 +282,36 @@ class AttentionAggregator:
                 self._accumulate_baskets_relative(per_layer_vecs)
                 # Optionally compute attention maps
                 if self.compute_maps:
-                    # Stream per-bin map means directly from attentions to avoid L_eff x L_eff tensors on GPU
+                    # Precompute bin ranges once per example
+                    num_bins_abs = (L_eff + self.basket_size - 1) // self.basket_size
+                    abs_bins: List[Tuple[int, int]] = []
+                    for b in range(num_bins_abs):
+                        rs = b * self.basket_size
+                        re = min((b + 1) * self.basket_size, L_eff)
+                        if re > rs:
+                            abs_bins.append((rs, re))
+
+                    # Relative bins
+                    assert L_eff >= self.rel_bins
+                    edges = torch.linspace(0, L_eff, steps=self.rel_bins + 1)
+                    edges = torch.floor(edges).to(torch.int64)
+                    edges[-1] = L_eff
+                    for k in range(1, edges.numel()):
+                        if edges[k] <= edges[k - 1]:
+                            edges[k] = min(edges[k - 1] + 1, L_eff)
+                    rel_bins: List[Tuple[int, int]] = []
+                    for b in range(self.rel_bins):
+                        rs = int(edges[b].item())
+                        re = int(edges[b + 1].item())
+                        if re > rs:
+                            rel_bins.append((rs, re))
+
+                    # Stream per-bin map means directly from attentions; one sync per bin pair
                     self._accumulate_maps_absolute_stream(
-                        attentions, i, eff_idx, num_layers
+                        attentions, i, eff_idx, num_layers, num_heads, abs_bins
                     )
                     self._accumulate_maps_relative_stream(
-                        attentions, i, eff_idx, num_layers
+                        attentions, i, eff_idx, num_layers, num_heads, rel_bins
                     )
             else:
                 # Article-level using doc_boundaries
@@ -540,36 +564,52 @@ class AttentionAggregator:
         i: int,
         eff_idx: torch.Tensor,
         num_layers: int,
+        num_heads: int,
+        abs_bins: List[Tuple[int, int]],
     ) -> None:
-        # Compute absolute basket-pair means without building full L_eff x L_eff maps on GPU
+        # Two-stage reduction: sum over heads and rows once per layer, reuse across all col bins.
         L_eff = eff_idx.numel()
-        num_bins = (L_eff + self.basket_size - 1) // self.basket_size
-        self._ensure_map_abs_buffers(num_bins)
+        self._ensure_map_abs_buffers(len(abs_bins))
 
-        for bs in range(num_bins):
-            rs = bs * self.basket_size
-            re = min((bs + 1) * self.basket_size, L_eff)
-            if re <= rs:
-                continue
+        device0 = attentions[0].device  # model device
+        dtype0 = attentions[0].dtype
+
+        for bs, (rs, re) in enumerate(abs_bins):
             rows = eff_idx[rs:re]
-            for bt in range(num_bins):
-                cs = bt * self.basket_size
-                ce = min((bt + 1) * self.basket_size, L_eff)
-                if ce <= cs:
-                    continue
-                cols = eff_idx[cs:ce]
+            r = re - rs
+            assert r > 0
+            # For each column bin, accumulate sums across layers on GPU, one sync per bin
+            # Precompute per-layer s_cols_eff for this row-bin
+            per_layer_scols: List[torch.Tensor] = []
+            per_layer_scols_reserve = []
+            for l in range(num_layers):
+                a = attentions[l][i]  # [H, L, L]
+                # Sum over heads and rows -> [L]
+                temp = a[:, rows, :]  # [H, r, L]
+                s_cols_full = temp.sum(dim=(0, 1))  # [L]
+                # Bring into reduced (effective) index space
+                s_cols_eff = torch.index_select(s_cols_full, 0, eff_idx)  # [L_eff]
+                per_layer_scols.append(s_cols_eff)
+                del temp, s_cols_full, a
 
-                # Average over layers and heads, then over rows/cols -> scalar
-                acc = 0.0
+            for bt, (cs, ce) in enumerate(abs_bins):
+                c = ce - cs
+                if c <= 0:
+                    continue
+                # GPU accumulator scalar
+                acc_sum = torch.zeros((), device=device0, dtype=dtype0)
                 for l in range(num_layers):
-                    a = attentions[l][i]  # [H, L, L]
-                    block = a[:, rows, :][:, :, cols]  # [H, r, c]
-                    acc += float(block.mean().item())
-                    del block
-                    del a
-                val = acc / float(num_layers)
+                    s_cols_eff = per_layer_scols[l]  # [L_eff]
+                    block_sum = s_cols_eff[cs:ce].sum()  # scalar on GPU
+                    acc_sum = acc_sum + block_sum
+                denom = float(num_layers * num_heads * r * c)
+                val = (acc_sum / denom).item()  # one sync per bin pair
                 self.map_abs_sum[bs, bt] += val
                 self.map_abs_count[bs, bt] += 1.0
+
+            # free per-layer cache for this row-bin
+            for t in per_layer_scols:
+                del t
 
     def _accumulate_maps_relative_stream(
         self,
@@ -577,41 +617,48 @@ class AttentionAggregator:
         i: int,
         eff_idx: torch.Tensor,
         num_layers: int,
+        num_heads: int,
+        rel_bins: List[Tuple[int, int]],
     ) -> None:
-        # Compute relative percentile basket-pair means streaming without building full maps
+        # Two-stage reduction with precomputed relative bins
         L_eff = eff_idx.numel()
         assert L_eff >= self.rel_bins
         self._ensure_map_rel_buffers()
-        edges = torch.linspace(0, L_eff, steps=self.rel_bins + 1)
-        edges = torch.floor(edges).to(torch.int64)
-        edges[-1] = L_eff
-        for k in range(1, edges.numel()):
-            if edges[k] <= edges[k - 1]:
-                edges[k] = min(edges[k - 1] + 1, L_eff)
 
-        for bs in range(self.rel_bins):
-            rs = int(edges[bs].item())
-            re = int(edges[bs + 1].item())
-            if re <= rs:
-                continue
+        device0 = attentions[0].device
+        dtype0 = attentions[0].dtype
+
+        for bs, (rs, re) in enumerate(rel_bins):
             rows = eff_idx[rs:re]
-            for bt in range(self.rel_bins):
-                cs = int(edges[bt].item())
-                ce = int(edges[bt + 1].item())
-                if ce <= cs:
-                    continue
-                cols = eff_idx[cs:ce]
+            r = re - rs
+            if r <= 0:
+                continue
+            # Cache per-layer sums across heads and rows
+            per_layer_scols: List[torch.Tensor] = []
+            for l in range(num_layers):
+                a = attentions[l][i]  # [H, L, L]
+                temp = a[:, rows, :]  # [H, r, L]
+                s_cols_full = temp.sum(dim=(0, 1))  # [L]
+                s_cols_eff = torch.index_select(s_cols_full, 0, eff_idx)  # [L_eff]
+                per_layer_scols.append(s_cols_eff)
+                del temp, s_cols_full, a
 
-                acc = 0.0
+            for bt, (cs, ce) in enumerate(rel_bins):
+                c = ce - cs
+                if c <= 0:
+                    continue
+                acc_sum = torch.zeros((), device=device0, dtype=dtype0)
                 for l in range(num_layers):
-                    a = attentions[l][i]  # [H, L, L]
-                    block = a[:, rows, :][:, :, cols]  # [H, r, c]
-                    acc += float(block.mean().item())
-                    del block
-                    del a
-                val = acc / float(num_layers)
+                    s_cols_eff = per_layer_scols[l]
+                    block_sum = s_cols_eff[cs:ce].sum()
+                    acc_sum = acc_sum + block_sum
+                denom = float(num_layers * num_heads * r * c)
+                val = (acc_sum / denom).item()
                 self.map_rel_sum[bs, bt] += val
                 self.map_rel_count[bs, bt] += 1.0
+
+            for t in per_layer_scols:
+                del t
 
     def finalize(self) -> Dict[str, Any]:
         assert self.num_layers is not None
