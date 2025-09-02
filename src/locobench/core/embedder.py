@@ -15,6 +15,7 @@ import tqdm
 import importlib.util
 from torch import Tensor
 import nnsight
+from types import SimpleNamespace
 
 
 DEVICE = (
@@ -270,6 +271,27 @@ class BaseEmbedder:
                     ].attention.source.self__attention_0.source.nn_functional_softmax_0.output = (
                         attn_calibrated
                     )
+
+                # Request the final model output so it is materialized after the trace.
+                # We expect to access last_hidden_state downstream.
+                model_output = self.model.output.save()
+
+        # After exiting the trace context, saved proxies are concrete values.
+        # Ensure downstream code can access `.last_hidden_state` as an attribute.
+        if hasattr(model_output, "last_hidden_state"):
+            return model_output
+        # Some HF models return dict-like outputs through NNsight; assert the key exists and wrap.
+        assert isinstance(
+            model_output, (dict, tuple, list)
+        ), "Unexpected model output type from NNsight"
+        if isinstance(model_output, dict):
+            assert (
+                "last_hidden_state" in model_output
+            ), "Model output missing 'last_hidden_state'"
+            return SimpleNamespace(last_hidden_state=model_output["last_hidden_state"])
+        # Fallback for tuple/list where index 0 is last_hidden_state (common HF convention)
+        assert len(model_output) > 0, "Empty model output sequence"
+        return SimpleNamespace(last_hidden_state=model_output[0])
 
     def get_model_outputs(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
