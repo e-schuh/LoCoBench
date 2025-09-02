@@ -273,12 +273,42 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Create embedders
     print("Initializing embedders...")
+
+    # Calibration parameters: allow per-embedder overrides; fallback to top-level keys
+    def pick(prefix: str, key: str, default=None):
+        if f"{prefix}_{key}" in config:
+            return config[f"{prefix}_{key}"]
+        return config.get(key, default)
+
+    # Standalone calibration args
+    sa_apply = bool(pick("standalone", "apply_attn_calibration", False))
+    sa_layers = pick("standalone", "calib_layers", None)
+    sa_source = pick("standalone", "calib_source_tokens", None)
+    sa_basket = pick("standalone", "calib_basket_size", None)
+
+    # Late-chunking calibration args
+    lc_apply = bool(pick("latechunk", "apply_attn_calibration", False))
+    lc_layers = pick("latechunk", "calib_layers", None)
+    lc_source = pick("latechunk", "calib_source_tokens", None)
+    lc_basket = pick("latechunk", "calib_basket_size", None)
+
     standalone_embedder = StandaloneEmbedder(
         model_name=model_name,
         device=device,
+        apply_attn_calibration=sa_apply,
+        calib_layers=sa_layers,
+        calib_source_tokens=sa_source,
+        calib_basket_size=sa_basket,
     )
 
-    latechunk_embedder = LateChunkingEmbedder(model_name=model_name, device=device)
+    latechunk_embedder = LateChunkingEmbedder(
+        model_name=model_name,
+        device=device,
+        apply_attn_calibration=lc_apply,
+        calib_layers=lc_layers,
+        calib_source_tokens=lc_source,
+        calib_basket_size=lc_basket,
+    )
 
     # Compute standalone embeddings
     print("Computing standalone embeddings...")
@@ -343,6 +373,21 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
     }
     config["run_dir"] = run_dir
 
+    # Save output config (include effective calibration params for reproducibility)
+    config["calibration_effective"] = {
+        "standalone": {
+            "apply_attn_calibration": sa_apply,
+            "calib_layers": sa_layers,
+            "calib_source_tokens": sa_source,
+            "calib_basket_size": sa_basket,
+        },
+        "latechunk": {
+            "apply_attn_calibration": lc_apply,
+            "calib_layers": lc_layers,
+            "calib_source_tokens": lc_source,
+            "calib_basket_size": lc_basket,
+        },
+    }
     # Save output config
     output_config_path = os.path.join(run_dir, "embedding_config.json")
     save_output_config(config, output_config_path)

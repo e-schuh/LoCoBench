@@ -14,6 +14,7 @@ from typing import List, Dict, Union, Literal, Optional, Any, Tuple
 import tqdm
 import importlib.util
 from torch import Tensor
+import nnsight
 
 
 DEVICE = (
@@ -21,6 +22,8 @@ DEVICE = (
     if torch.cuda.is_available()
     else ("mps" if torch.backends.mps.is_available() else "cpu")
 )
+
+ATTN_CALIB_SUPPORTED_MODELS = ["Alibaba-NLP/gte-multilingual-base"]
 
 
 class BaseEmbedder:
@@ -36,6 +39,10 @@ class BaseEmbedder:
         device: Optional[str] = None,
         normalize: bool = True,
         jina_v3_task: Optional[str] = "text-matching",
+        apply_attn_calibration: bool = False,
+        calib_layers: Optional[str] = None,
+        calib_source_tokens: Optional[str] = None,
+        calib_basket_size: Optional[int] = None,
     ):
         """
         Initialize the BaseEmbedder with a HuggingFace model.
@@ -60,7 +67,53 @@ class BaseEmbedder:
         else:
             xformers_available = True
 
-        if model_name == "Alibaba-NLP/gte-multilingual-base" and xformers_available:
+        if apply_attn_calibration:
+            assert (
+                model_name in ATTN_CALIB_SUPPORTED_MODELS
+            ), f"Attention calibration is only supported for the following models: {ATTN_CALIB_SUPPORTED_MODELS}"
+            print("Loading model using eager attn to support calibration")
+            hf_model = AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                attn_implementation="eager",
+                torch_dtype=torch.float16,
+            ).to(self.device)
+            self.model = nnsight.NNsight(hf_model)
+
+            self.num_layers = int(self.model.config.num_hidden_layers)
+
+            if calib_layers is None:
+                raise ValueError(
+                    "Must specify calib_layers when using attention calibration"
+                )
+            elif calib_layers == "last_half":
+                self.calib_layer_idx_start = self.num_layers // 2
+                self.calib_layer_idx_end = self.num_layers
+            elif calib_layers == "last":
+                self.calib_layer_idx_start = self.num_layers - 1
+                self.calib_layer_idx_end = self.num_layers
+            else:
+                raise ValueError("Invalid calibration layer selection")
+
+            if calib_source_tokens is None:
+                raise ValueError(
+                    "Must specify calib_source_tokens when using attention calibration"
+                )
+            elif calib_source_tokens == "cls":
+                self.calib_source_mode = "cls"
+                self.calib_source_token_idx = 0
+            elif calib_source_tokens == "all":
+                self.calib_source_mode = "all"
+            else:
+                raise ValueError("Invalid calibration source token selection")
+
+            if calib_basket_size is None:
+                raise ValueError(
+                    "Must specify calib_basket_size when using attention calibration"
+                )
+            self.calib_basket_size = calib_basket_size
+
+        elif model_name == "Alibaba-NLP/gte-multilingual-base" and xformers_available:
             print("Loading Alibaba-NLP/gte-multilingual-base with xformers support")
             self.model = AutoModel.from_pretrained(
                 model_name,
@@ -85,10 +138,138 @@ class BaseEmbedder:
         self.model.eval()
         self.normalize = normalize
         self.model_name = model_name
+        self.apply_attn_calibration = apply_attn_calibration
 
         # Set up Jina v3 task ID if applicable
         if model_name == "jinaai/jina-embeddings-v3":
             self.task_id = self.model._adaptation_map[jina_v3_task]
+
+    def get_output_calibrated(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
+    ) -> Any:
+        # NOTE: Calibrate either CLS-only or all query rows depending on self.calib_source_mode.
+        with self.model.trace() as tracer:
+            with tracer.invoke(input_ids=input_ids, attention_mask=attention_mask):
+                for i in range(self.calib_layer_idx_start, self.calib_layer_idx_end):
+                    attn = self.model.encoder.layer[
+                        i
+                    ].attention.source.self__attention_0.source.nn_functional_softmax_0.output
+
+                    # Shape assertions (fail fast)
+                    assert attn.dim() == 4, f"Expected attn to be 4D, got {attn.shape}"
+                    B, H, Q, K = attn.shape
+                    assert attention_mask.shape == (
+                        B,
+                        K,
+                    ), f"attention_mask shape mismatch: {attention_mask.shape} vs expected {(B, K)}"
+                    if getattr(self, "calib_source_mode", "cls") == "cls":
+                        assert (
+                            self.calib_source_token_idx < Q
+                        ), f"CLS/source index {self.calib_source_token_idx} out of range for Q={Q}"
+                    assert (
+                        self.calib_basket_size is not None
+                        and self.calib_basket_size > 0
+                    ), "calib_basket_size must be a positive integer"
+
+                    # Prepare mask (right-padding asserted)
+                    mask = attention_mask.to(device=attn.device, dtype=torch.long)
+                    valid_len = mask.sum(dim=1)  # (B,)
+                    assert torch.all(valid_len > 0), "Empty sequences are not supported"
+                    S = int(self.calib_basket_size)
+                    assert torch.all(
+                        valid_len >= S
+                    ), f"Insufficient valid tokens for calibration: found per-batch {valid_len.tolist()}, required >= {S}"
+                    pos = torch.arange(K, device=attn.device).unsqueeze(0)  # (1,K)
+                    right_padded = (pos < valid_len.unsqueeze(1)).to(mask.dtype)
+                    assert torch.equal(
+                        mask, right_padded
+                    ), "Attention mask must be right-padded (all valid tokens first)"
+
+                    # For self-attention we assume Q == K.
+                    assert (
+                        Q == K
+                    ), f"Expected self-attention with Q==K, got Q={Q}, K={K}"
+
+                    # Select which query rows to calibrate: R = 1 for 'cls', else R = Q for 'all'
+                    if getattr(self, "calib_source_mode", "cls") == "cls":
+                        q_idx = torch.tensor(
+                            [self.calib_source_token_idx], device=attn.device
+                        )
+                    else:
+                        q_idx = torch.arange(Q, device=attn.device)
+                    R = q_idx.numel()
+
+                    # Extract selected query rows: (B, H, R, K)
+                    sel_rows = attn.index_select(dim=2, index=q_idx)
+
+                    # Zero out pads upfront using key mask
+                    mask_f = right_padded.to(dtype=attn.dtype)  # (B,K)
+                    mask_bk = mask_f.view(B, 1, 1, K)  # (B,1,1,K)
+                    sel_rows_masked = sel_rows * mask_bk  # (B,H,R,K)
+
+                    # Query validity mask (to avoid normalizing padded query rows)
+                    qmask = right_padded[:, :Q].to(dtype=torch.bool)  # (B,Q)
+                    qmask_sel = qmask.index_select(dim=1, index=q_idx)  # (B,R)
+                    qmask_sel_b = qmask_sel.view(B, 1, R, 1)  # (B,1,R,1)
+
+                    # Compute basket ids per position (shared across batch/heads)
+                    max_baskets = (K + S - 1) // S
+                    basket_ids = (pos // S).clamp_max(max_baskets - 1)  # (1,K)
+                    basket_ids = basket_ids.view(1, 1, 1, K).expand(
+                        B, H, R, K
+                    )  # (B,H,R,K)
+
+                    # Sum attention per basket: (B,H,R,max_baskets)
+                    bucket_sums = torch.zeros(
+                        (B, H, R, max_baskets), device=attn.device, dtype=attn.dtype
+                    )
+                    bucket_sums = bucket_sums.scatter_add(
+                        dim=-1, index=basket_ids, src=sel_rows_masked
+                    )
+
+                    # Gather per-position denominators: (B,H,R,K)
+                    denom = bucket_sums.gather(dim=-1, index=basket_ids)
+
+                    # Number of baskets per item: ceil(valid_len / S) -> (B,)
+                    n_baskets = ((valid_len + (S - 1)) // S).to(dtype=attn.dtype)
+                    n_baskets = n_baskets.view(B, 1, 1, 1)  # (B,1,1,1)
+
+                    # Apply calibration formula per position (masked positions remain zero)
+                    scaled = sel_rows_masked * S  # (B,H,R,K)
+                    calibrated = torch.where(
+                        denom > 0,
+                        (scaled / denom) * (1.0 / n_baskets),
+                        torch.zeros_like(scaled),
+                    )
+
+                    # Enforce valid distribution over valid tokens (sum to 1), keep pads at 0
+                    calibrated = calibrated * mask_bk
+                    row_sum = calibrated.sum(dim=-1, keepdim=True)  # (B,H, R, 1)
+                    # Only valid query rows must have positive sums
+                    row_sum_squeezed = row_sum.squeeze(-1)  # (B,H,R)
+                    must_be_pos = qmask_sel.view(B, 1, R).expand(B, H, R)
+                    assert torch.all(
+                        row_sum_squeezed[must_be_pos] > 0
+                    ), "Calibrated row sums must be > 0 for valid queries"
+                    # Normalize valid query rows, keep invalid query rows unchanged (original masked rows)
+                    denom_rows = torch.where(
+                        qmask_sel_b > 0, row_sum, torch.ones_like(row_sum)
+                    )
+                    normalized = torch.where(
+                        qmask_sel_b > 0,
+                        calibrated / denom_rows,
+                        sel_rows_masked,
+                    )
+
+                    # Replace selected query rows; keep other query rows unchanged
+                    attn_calibrated = attn.clone()
+                    attn_calibrated = attn_calibrated.index_copy(2, q_idx, normalized)
+
+                    self.model.encoder.layer[
+                        i
+                    ].attention.source.self__attention_0.source.nn_functional_softmax_0.output = (
+                        attn_calibrated
+                    )
 
     def get_model_outputs(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
@@ -107,8 +288,15 @@ class BaseEmbedder:
         input_ids = input_ids.to(self.device)
         attention_mask = attention_mask.to(self.device)
 
+        # Apply attention calibration if enabled
+        if self.apply_attn_calibration:
+            with torch.no_grad():
+                outputs = self.get_output_calibrated(
+                    input_ids=input_ids, attention_mask=attention_mask
+                )
+
         # If model is jinaai/jina-embeddings-v3, then add task_id
-        if self.model_name == "jinaai/jina-embeddings-v3":
+        elif self.model_name == "jinaai/jina-embeddings-v3":
             adapter_mask = torch.full(
                 (input_ids.shape[0],),
                 self.task_id,
@@ -210,6 +398,10 @@ class StandaloneEmbedder(BaseEmbedder):
         device: Optional[str] = None,
         normalize: bool = True,
         jina_v3_task: Optional[str] = "text-matching",
+        apply_attn_calibration: bool = False,
+        calib_layers: Optional[str] = None,
+        calib_source_tokens: Optional[str] = None,
+        calib_basket_size: Optional[int] = None,
     ):
         """
         Initialize the StandaloneEmbedder with a HuggingFace model.
@@ -226,6 +418,10 @@ class StandaloneEmbedder(BaseEmbedder):
             device=device,
             normalize=normalize,
             jina_v3_task=jina_v3_task,
+            apply_attn_calibration=apply_attn_calibration,
+            calib_layers=calib_layers,
+            calib_source_tokens=calib_source_tokens,
+            calib_basket_size=calib_basket_size,
         )
 
     def embed_batch(
@@ -324,6 +520,10 @@ class LateChunkingEmbedder(BaseEmbedder):
         device: Optional[str] = None,
         normalize: bool = True,
         jina_v3_task: Optional[str] = "text-matching",
+        apply_attn_calibration: bool = False,
+        calib_layers: Optional[str] = None,
+        calib_source_tokens: Optional[str] = None,
+        calib_basket_size: Optional[int] = None,
     ):
         """
         Initialize the LateChunkingEmbedder with a HuggingFace model.
@@ -340,6 +540,10 @@ class LateChunkingEmbedder(BaseEmbedder):
             device=device,
             normalize=normalize,
             jina_v3_task=jina_v3_task,
+            apply_attn_calibration=apply_attn_calibration,
+            calib_layers=calib_layers,
+            calib_source_tokens=calib_source_tokens,
+            calib_basket_size=calib_basket_size,
         )
 
     def embed_batch(

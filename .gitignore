@@ -182,5 +182,8 @@ config/JinaAi_jina-v3/
 config/Qwen_Qwen3-Emb
 config/cohere/
 config/wiki_parallel
+# Allow tracking of attention calibration configs under Alibaba_mGTE
+!config/Alibaba_mGTE/attn_clb/
+!config/Alibaba_mGTE/attn_clb/**
 .DS_Store
 .github/*
