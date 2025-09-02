@@ -200,77 +200,82 @@ class BaseEmbedder:
                         q_idx = torch.arange(Q, device=attn.device)
                     R = q_idx.numel()
 
-                    # Extract selected query rows: (B, H, R, K)
-                    sel_rows = attn.index_select(dim=2, index=q_idx)
-
-                    # Zero out pads upfront using key mask
+                    # Common masks and helpers
                     mask_f = right_padded.to(dtype=attn.dtype)  # (B,K)
                     mask_bk = mask_f.view(B, 1, 1, K)  # (B,1,1,K)
-                    sel_rows_masked = sel_rows * mask_bk  # (B,H,R,K)
-
-                    # Query validity mask (to avoid normalizing padded query rows)
                     qmask = right_padded[:, :Q].to(dtype=torch.bool)  # (B,Q)
-                    qmask_sel = qmask.index_select(dim=1, index=q_idx)  # (B,R)
-                    qmask_sel_b = qmask_sel.view(B, 1, R, 1)  # (B,1,R,1)
-
-                    # Compute basket ids per position (shared across batch/heads)
                     max_baskets = (K + S - 1) // S
-                    basket_ids = (pos // S).clamp_max(max_baskets - 1)  # (1,K)
-                    basket_ids = basket_ids.view(1, 1, 1, K).expand(
-                        B, H, R, K
-                    )  # (B,H,R,K)
+                    base_basket_ids = (pos // S).clamp_max(max_baskets - 1)  # (1,K)
 
-                    # Sum attention per basket: (B,H,R,max_baskets)
-                    bucket_sums = torch.zeros(
-                        (B, H, R, max_baskets), device=attn.device, dtype=attn.dtype
-                    )
-                    bucket_sums = bucket_sums.scatter_add(
-                        dim=-1, index=basket_ids, src=sel_rows_masked
-                    )
+                    # Process queries in chunks to lower VRAM
+                    r_chunk = 64
+                    for start in range(0, R, r_chunk):
+                        end = min(start + r_chunk, R)
+                        q_idx_chunk = q_idx[start:end]
+                        r = q_idx_chunk.numel()
+                        assert r > 0
 
-                    # Gather per-position denominators: (B,H,R,K)
-                    denom = bucket_sums.gather(dim=-1, index=basket_ids)
+                        # Extract selected query rows: (B,H,r,K)
+                        sel_rows = attn.index_select(dim=2, index=q_idx_chunk)
+                        sel_rows_masked = sel_rows * mask_bk  # (B,H,r,K)
 
-                    # Number of baskets per item: ceil(valid_len / S) -> (B,)
-                    n_baskets = ((valid_len + (S - 1)) // S).to(dtype=attn.dtype)
-                    n_baskets = n_baskets.view(B, 1, 1, 1)  # (B,1,1,1)
+                        # Query validity mask (to avoid normalizing padded query rows)
+                        qmask_sel = qmask.index_select(
+                            dim=1, index=q_idx_chunk
+                        )  # (B,r)
+                        qmask_sel_b = qmask_sel.view(B, 1, r, 1)  # (B,1,r,1)
 
-                    # Apply calibration formula per position (masked positions remain zero)
-                    scaled = sel_rows_masked * S  # (B,H,R,K)
-                    calibrated = torch.where(
-                        denom > 0,
-                        (scaled / denom) * (1.0 / n_baskets),
-                        torch.zeros_like(scaled),
-                    )
+                        # Basket ids expanded for this chunk
+                        basket_ids = base_basket_ids.view(1, 1, 1, K).expand(B, H, r, K)
 
-                    # Enforce valid distribution over valid tokens (sum to 1), keep pads at 0
-                    calibrated = calibrated * mask_bk
-                    row_sum = calibrated.sum(dim=-1, keepdim=True)  # (B,H, R, 1)
-                    # Only valid query rows must have positive sums
-                    row_sum_squeezed = row_sum.squeeze(-1)  # (B,H,R)
-                    must_be_pos = qmask_sel.view(B, 1, R).expand(B, H, R)
-                    assert torch.all(
-                        row_sum_squeezed[must_be_pos] > 0
-                    ), "Calibrated row sums must be > 0 for valid queries"
-                    # Normalize valid query rows, keep invalid query rows unchanged (original masked rows)
-                    denom_rows = torch.where(
-                        qmask_sel_b > 0, row_sum, torch.ones_like(row_sum)
-                    )
-                    normalized = torch.where(
-                        qmask_sel_b > 0,
-                        calibrated / denom_rows,
-                        sel_rows_masked,
-                    )
+                        # Sum attention per basket: (B,H,r,max_baskets)
+                        bucket_sums = torch.zeros(
+                            (B, H, r, max_baskets), device=attn.device, dtype=attn.dtype
+                        )
+                        bucket_sums = bucket_sums.scatter_add(
+                            dim=-1, index=basket_ids, src=sel_rows_masked
+                        )
 
-                    # Replace selected query rows; keep other query rows unchanged
-                    attn_calibrated = attn.clone()
-                    attn_calibrated = attn_calibrated.index_copy(2, q_idx, normalized)
+                        # Gather per-position denominators: (B,H,r,K)
+                        denom = bucket_sums.gather(dim=-1, index=basket_ids)
 
-                    self.model.encoder.layer[
-                        i
-                    ].attention.source.self__attention_0.source.nn_functional_softmax_0.output = (
-                        attn_calibrated
-                    )
+                        # Number of baskets per item: ceil(valid_len / S) -> (B,)
+                        n_baskets = ((valid_len + (S - 1)) // S).to(dtype=attn.dtype)
+                        n_baskets = n_baskets.view(B, 1, 1, 1)  # (B,1,1,1)
+
+                        # Apply calibration formula per position (masked positions remain zero)
+                        scaled = sel_rows_masked * S  # (B,H,r,K)
+                        calibrated = torch.where(
+                            denom > 0,
+                            (scaled / denom) * (1.0 / n_baskets),
+                            torch.zeros_like(scaled),
+                        )
+
+                        # Enforce valid distribution over valid tokens (sum to 1), keep pads at 0
+                        calibrated = calibrated * mask_bk
+                        row_sum = calibrated.sum(dim=-1, keepdim=True)  # (B,H, r, 1)
+                        row_sum_squeezed = row_sum.squeeze(-1)  # (B,H,r)
+                        must_be_pos = qmask_sel.view(B, 1, r).expand(B, H, r)
+                        assert torch.all(
+                            row_sum_squeezed[must_be_pos] > 0
+                        ), "Calibrated row sums must be > 0 for valid queries"
+
+                        # Normalize valid query rows, keep invalid query rows unchanged (original masked rows)
+                        denom_rows = torch.where(
+                            qmask_sel_b > 0, row_sum, torch.ones_like(row_sum)
+                        )
+                        normalized_chunk = torch.where(
+                            qmask_sel_b > 0,
+                            calibrated / denom_rows,
+                            sel_rows_masked,
+                        )
+
+                        # In-place slice assignment on the NNsight proxy to avoid full clone
+                        self.model.encoder.layer[
+                            i
+                        ].attention.source.self__attention_0.source.nn_functional_softmax_0.output[
+                            :, :, q_idx_chunk, :
+                        ] = normalized_chunk
 
                 # Request the final model output so it is materialized after the trace.
                 # We expect to access last_hidden_state downstream.
