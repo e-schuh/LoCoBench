@@ -75,6 +75,59 @@ def create_run_name(config: Dict[str, Any]) -> str:
     model_name = config["model_name"].replace("/", "_")
     dataset_name = os.path.basename(os.path.dirname(config["tokenized_dataset_path"]))
 
+    # Helper to build calibration tag from effective settings
+    def map_layers(val: Any) -> str:
+        if val is None:
+            return ""
+        v = str(val).lower()
+        if v == "last_half":
+            return "LH"
+        if v == "all":
+            return "A"
+        if v == "last":
+            return "L"
+        return v.upper()
+
+    def map_source(val: Any) -> str:
+        if val is None:
+            return ""
+        v = str(val).lower()
+        if v == "cls":
+            return "CLS"
+        if v == "all":
+            return "ATK"
+        return v.upper()
+
+    def build_method_tag(eff: Dict[str, Any]) -> str:
+        return "_".join(
+            [
+                map_layers(eff.get("calib_layers")),
+                map_source(eff.get("calib_source_tokens")),
+                str(eff.get("calib_basket_size")),
+            ]
+        )
+
+    def build_calib_suffix(cfg: Dict[str, Any]) -> str:
+        ce = cfg.get("calibration_effective")
+        if not ce:
+            return ""
+        sa = ce.get("standalone", {})
+        lc = ce.get("latechunk", {})
+        sa_on = bool(sa.get("apply_attn_calibration", False))
+        lc_on = bool(lc.get("apply_attn_calibration", False))
+        if not sa_on and not lc_on:
+            return ""
+        sa_tag = build_method_tag(sa)
+        lc_tag = build_method_tag(lc)
+        if sa_on and lc_on and sa_tag == lc_tag:
+            return f"__{sa_tag}"
+        parts = []
+        if sa_on:
+            parts.append(f"sa{sa_tag}")
+        if lc_on:
+            parts.append(f"lc{lc_tag}")
+        return "__" + "__".join(parts)
+
     # Handle both old and new index generation approaches
     if "indices_path" in config:
         # New approach using pre-generated indices
@@ -89,10 +142,11 @@ def create_run_name(config: Dict[str, Any]) -> str:
             range_str = f"__range{min_range}-{max_range}"
 
         # Create run name for parallel indices approach
+        calib_suffix = build_calib_suffix(config)
         if target_lang and target_lang != "none":
-            return f"{model_name}__{dataset_name}__parallel__{source_lang}_{target_lang}__concat-size{concat_size}{range_str}"
+            return f"{model_name}__{dataset_name}__parallel__{source_lang}_{target_lang}__concat-size{concat_size}{range_str}{calib_suffix}"
         else:
-            return f"{model_name}__{dataset_name}__parallel__{source_lang}__concat-size{concat_size}{range_str}"
+            return f"{model_name}__{dataset_name}__parallel__{source_lang}__concat-size{concat_size}{range_str}{calib_suffix}"
     else:
         # Legacy approach
         concat_strategy = config.get("concatenation_strategy", "unknown")
@@ -107,7 +161,8 @@ def create_run_name(config: Dict[str, Any]) -> str:
                 ranges_parts.append(f"{start}-{end}")
             ranges_str = f"ranges_{'_'.join(ranges_parts)}"
 
-        return f"{model_name}__{dataset_name}__{concat_strategy}__concat-size{concat_size}_{ranges_str}"
+    calib_suffix = build_calib_suffix(config)
+    return f"{model_name}__{dataset_name}__{concat_strategy}__concat-size{concat_size}_{ranges_str}{calib_suffix}"
 
 
 def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -317,6 +372,22 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
     # Compute late-chunking embeddings
     print("Computing late-chunking embeddings...")
     latechunk_embeddings = latechunk_embedder.embed_dataloader(concat_loader)
+
+    # Record effective calibration early (for run_name)
+    config["calibration_effective"] = {
+        "standalone": {
+            "apply_attn_calibration": sa_apply,
+            "calib_layers": sa_layers,
+            "calib_source_tokens": sa_source,
+            "calib_basket_size": sa_basket,
+        },
+        "latechunk": {
+            "apply_attn_calibration": lc_apply,
+            "calib_layers": lc_layers,
+            "calib_source_tokens": lc_source,
+            "calib_basket_size": lc_basket,
+        },
+    }
 
     # Create output directory structure
     embeddings_base_dir = config["embeddings_output_dir"]
