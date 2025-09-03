@@ -208,7 +208,7 @@ class BaseEmbedder:
                     base_basket_ids = (pos // S).clamp_max(max_baskets - 1)  # (1,K)
 
                     # Process queries in chunks to lower VRAM
-                    r_chunk = 32
+                    r_chunk = 8
                     for start in range(0, R, r_chunk):
                         end = min(start + r_chunk, R)
                         q_idx_chunk = q_idx[start:end]
