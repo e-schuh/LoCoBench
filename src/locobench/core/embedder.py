@@ -290,11 +290,11 @@ class BaseEmbedder:
                             sel_rows_masked,
                         )
 
-                        # In-place slice assignment on the NNsight proxy to avoid full clone
+                        # In-place contiguous slice assignment on the NNsight proxy (avoid LongTensor advanced indexing)
                         self.model.encoder.layer[
                             i
                         ].attention.source.self__attention_0.source.nn_functional_softmax_0.output[
-                            :, :, q_idx_chunk, :
+                            :, :, start:end, :
                         ] = normalized_chunk
 
                 # Request the final model output so it is materialized after the trace.
