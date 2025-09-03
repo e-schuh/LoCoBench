@@ -149,6 +149,38 @@ class BaseEmbedder:
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> Any:
         # NOTE: Calibrate either CLS-only or all query rows depending on self.calib_source_mode.
+        # Pre-validate inputs OUTSIDE the NNsight trace to surface clean assertion messages.
+        mask_in = attention_mask.to(self.device, dtype=torch.long)
+        B_in, K_in = mask_in.shape
+        assert B_in == input_ids.shape[0], "Batch size mismatch between inputs and mask"
+        assert (
+            self.calib_basket_size is not None and self.calib_basket_size > 0
+        ), "calib_basket_size must be positive"
+        S = int(self.calib_basket_size)
+        valid_len_in = mask_in.sum(dim=1)
+        assert torch.all(
+            valid_len_in > 0
+        ), "Sequences with zero valid tokens are not supported"
+        pos_in = torch.arange(K_in, device=mask_in.device).unsqueeze(0)  # (1,K)
+        right_padded_in = (pos_in < valid_len_in.unsqueeze(1)).to(mask_in.dtype)
+        if not torch.equal(mask_in, right_padded_in):
+            bad = (
+                (mask_in != right_padded_in)
+                .any(dim=1)
+                .nonzero(as_tuple=False)
+                .squeeze(-1)
+                .tolist()
+            )
+            raise AssertionError(
+                f"Attention mask must be right-padded; bad batch indices: {bad}"
+            )
+        if not torch.all(valid_len_in >= S):
+            too_short = (valid_len_in < S).nonzero(as_tuple=False).squeeze(-1).tolist()
+            lens = valid_len_in.tolist()
+            raise AssertionError(
+                f"calib_basket_size={S} exceeds some sequence lengths; offending indices={too_short}, lengths={lens}"
+            )
+
         with self.model.trace() as tracer:
             with tracer.invoke(input_ids=input_ids, attention_mask=attention_mask):
                 for i in range(self.calib_layer_idx_start, self.calib_layer_idx_end):
@@ -156,35 +188,23 @@ class BaseEmbedder:
                         i
                     ].attention.source.self__attention_0.source.nn_functional_softmax_0.output
 
-                    # Shape assertions (fail fast)
-                    assert attn.dim() == 4, f"Expected attn to be 4D, got {attn.shape}"
+                    # Shape assertions (fail fast) — only use ints in messages
+                    assert attn.dim() == 4, "Expected attn to be 4D"
                     B, H, Q, K = attn.shape
-                    assert attention_mask.shape == (
-                        B,
-                        K,
-                    ), f"attention_mask shape mismatch: {attention_mask.shape} vs expected {(B, K)}"
+                    assert (B, K) == (
+                        B_in,
+                        K_in,
+                    ), "attention_mask shape mismatch vs attn"
                     if getattr(self, "calib_source_mode", "cls") == "cls":
                         assert (
                             self.calib_source_token_idx < Q
-                        ), f"CLS/source index {self.calib_source_token_idx} out of range for Q={Q}"
-                    assert (
-                        self.calib_basket_size is not None
-                        and self.calib_basket_size > 0
-                    ), "calib_basket_size must be a positive integer"
+                        ), "CLS/source index out of range"
 
-                    # Prepare mask (right-padding asserted)
-                    mask = attention_mask.to(device=attn.device, dtype=torch.long)
-                    valid_len = mask.sum(dim=1)  # (B,)
-                    assert torch.all(valid_len > 0), "Empty sequences are not supported"
+                    # Prepare mask (use precomputed tensors to avoid Proxy in messages)
+                    valid_len = valid_len_in.to(device=attn.device)
                     S = int(self.calib_basket_size)
-                    assert torch.all(
-                        valid_len >= S
-                    ), f"Insufficient valid tokens for calibration: found per-batch {valid_len.tolist()}, required >= {S}"
                     pos = torch.arange(K, device=attn.device).unsqueeze(0)  # (1,K)
-                    right_padded = (pos < valid_len.unsqueeze(1)).to(mask.dtype)
-                    assert torch.equal(
-                        mask, right_padded
-                    ), "Attention mask must be right-padded (all valid tokens first)"
+                    right_padded = (pos < valid_len.unsqueeze(1)).to(dtype=torch.long)
 
                     # For self-attention we assume Q == K.
                     assert (
