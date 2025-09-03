@@ -149,6 +149,38 @@ class BaseEmbedder:
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> Any:
         # NOTE: Calibrate either CLS-only or all query rows depending on self.calib_source_mode.
+        # Pre-validate inputs OUTSIDE the NNsight trace to surface clean assertion messages.
+        mask_in = attention_mask.to(self.device, dtype=torch.long)
+        B_in, K_in = mask_in.shape
+        assert B_in == input_ids.shape[0], "Batch size mismatch between inputs and mask"
+        assert (
+            self.calib_basket_size is not None and self.calib_basket_size > 0
+        ), "calib_basket_size must be positive"
+        S = int(self.calib_basket_size)
+        valid_len_in = mask_in.sum(dim=1)
+        assert torch.all(
+            valid_len_in > 0
+        ), "Sequences with zero valid tokens are not supported"
+        pos_in = torch.arange(K_in, device=mask_in.device).unsqueeze(0)  # (1,K)
+        right_padded_in = (pos_in < valid_len_in.unsqueeze(1)).to(mask_in.dtype)
+        if not torch.equal(mask_in, right_padded_in):
+            bad = (
+                (mask_in != right_padded_in)
+                .any(dim=1)
+                .nonzero(as_tuple=False)
+                .squeeze(-1)
+                .tolist()
+            )
+            raise AssertionError(
+                f"Attention mask must be right-padded; bad batch indices: {bad}"
+            )
+        if not torch.all(valid_len_in >= S):
+            too_short = (valid_len_in < S).nonzero(as_tuple=False).squeeze(-1).tolist()
+            lens = valid_len_in.tolist()
+            raise AssertionError(
+                f"calib_basket_size={S} exceeds some sequence lengths; offending indices={too_short}, lengths={lens}"
+            )
+
         with self.model.trace() as tracer:
             with tracer.invoke(input_ids=input_ids, attention_mask=attention_mask):
                 for i in range(self.calib_layer_idx_start, self.calib_layer_idx_end):
@@ -156,35 +188,23 @@ class BaseEmbedder:
                         i
                     ].attention.source.self__attention_0.source.nn_functional_softmax_0.output
 
-                    # Shape assertions (fail fast)
-                    assert attn.dim() == 4, f"Expected attn to be 4D, got {attn.shape}"
+                    # Shape assertions (fail fast) — only use ints in messages
+                    assert attn.dim() == 4, "Expected attn to be 4D"
                     B, H, Q, K = attn.shape
-                    assert attention_mask.shape == (
-                        B,
-                        K,
-                    ), f"attention_mask shape mismatch: {attention_mask.shape} vs expected {(B, K)}"
+                    assert (B, K) == (
+                        B_in,
+                        K_in,
+                    ), "attention_mask shape mismatch vs attn"
                     if getattr(self, "calib_source_mode", "cls") == "cls":
                         assert (
                             self.calib_source_token_idx < Q
-                        ), f"CLS/source index {self.calib_source_token_idx} out of range for Q={Q}"
-                    assert (
-                        self.calib_basket_size is not None
-                        and self.calib_basket_size > 0
-                    ), "calib_basket_size must be a positive integer"
+                        ), "CLS/source index out of range"
 
-                    # Prepare mask (right-padding asserted)
-                    mask = attention_mask.to(device=attn.device, dtype=torch.long)
-                    valid_len = mask.sum(dim=1)  # (B,)
-                    assert torch.all(valid_len > 0), "Empty sequences are not supported"
+                    # Prepare mask (use precomputed tensors to avoid Proxy in messages)
+                    valid_len = valid_len_in.to(device=attn.device)
                     S = int(self.calib_basket_size)
-                    assert torch.all(
-                        valid_len >= S
-                    ), f"Insufficient valid tokens for calibration: found per-batch {valid_len.tolist()}, required >= {S}"
                     pos = torch.arange(K, device=attn.device).unsqueeze(0)  # (1,K)
-                    right_padded = (pos < valid_len.unsqueeze(1)).to(mask.dtype)
-                    assert torch.equal(
-                        mask, right_padded
-                    ), "Attention mask must be right-padded (all valid tokens first)"
+                    right_padded = (pos < valid_len.unsqueeze(1)).to(dtype=torch.long)
 
                     # For self-attention we assume Q == K.
                     assert (
@@ -200,77 +220,82 @@ class BaseEmbedder:
                         q_idx = torch.arange(Q, device=attn.device)
                     R = q_idx.numel()
 
-                    # Extract selected query rows: (B, H, R, K)
-                    sel_rows = attn.index_select(dim=2, index=q_idx)
-
-                    # Zero out pads upfront using key mask
+                    # Common masks and helpers
                     mask_f = right_padded.to(dtype=attn.dtype)  # (B,K)
                     mask_bk = mask_f.view(B, 1, 1, K)  # (B,1,1,K)
-                    sel_rows_masked = sel_rows * mask_bk  # (B,H,R,K)
-
-                    # Query validity mask (to avoid normalizing padded query rows)
                     qmask = right_padded[:, :Q].to(dtype=torch.bool)  # (B,Q)
-                    qmask_sel = qmask.index_select(dim=1, index=q_idx)  # (B,R)
-                    qmask_sel_b = qmask_sel.view(B, 1, R, 1)  # (B,1,R,1)
-
-                    # Compute basket ids per position (shared across batch/heads)
                     max_baskets = (K + S - 1) // S
-                    basket_ids = (pos // S).clamp_max(max_baskets - 1)  # (1,K)
-                    basket_ids = basket_ids.view(1, 1, 1, K).expand(
-                        B, H, R, K
-                    )  # (B,H,R,K)
+                    base_basket_ids = (pos // S).clamp_max(max_baskets - 1)  # (1,K)
 
-                    # Sum attention per basket: (B,H,R,max_baskets)
-                    bucket_sums = torch.zeros(
-                        (B, H, R, max_baskets), device=attn.device, dtype=attn.dtype
-                    )
-                    bucket_sums = bucket_sums.scatter_add(
-                        dim=-1, index=basket_ids, src=sel_rows_masked
-                    )
+                    # Process queries in chunks to lower VRAM
+                    r_chunk = 2
+                    for start in range(0, R, r_chunk):
+                        end = min(start + r_chunk, R)
+                        q_idx_chunk = q_idx[start:end]
+                        r = q_idx_chunk.numel()
+                        assert r > 0
 
-                    # Gather per-position denominators: (B,H,R,K)
-                    denom = bucket_sums.gather(dim=-1, index=basket_ids)
+                        # Extract selected query rows: (B,H,r,K)
+                        sel_rows = attn.index_select(dim=2, index=q_idx_chunk)
+                        sel_rows_masked = sel_rows * mask_bk  # (B,H,r,K)
 
-                    # Number of baskets per item: ceil(valid_len / S) -> (B,)
-                    n_baskets = ((valid_len + (S - 1)) // S).to(dtype=attn.dtype)
-                    n_baskets = n_baskets.view(B, 1, 1, 1)  # (B,1,1,1)
+                        # Query validity mask (to avoid normalizing padded query rows)
+                        qmask_sel = qmask.index_select(
+                            dim=1, index=q_idx_chunk
+                        )  # (B,r)
+                        qmask_sel_b = qmask_sel.view(B, 1, r, 1)  # (B,1,r,1)
 
-                    # Apply calibration formula per position (masked positions remain zero)
-                    scaled = sel_rows_masked * S  # (B,H,R,K)
-                    calibrated = torch.where(
-                        denom > 0,
-                        (scaled / denom) * (1.0 / n_baskets),
-                        torch.zeros_like(scaled),
-                    )
+                        # Basket ids expanded for this chunk
+                        basket_ids = base_basket_ids.view(1, 1, 1, K).expand(B, H, r, K)
 
-                    # Enforce valid distribution over valid tokens (sum to 1), keep pads at 0
-                    calibrated = calibrated * mask_bk
-                    row_sum = calibrated.sum(dim=-1, keepdim=True)  # (B,H, R, 1)
-                    # Only valid query rows must have positive sums
-                    row_sum_squeezed = row_sum.squeeze(-1)  # (B,H,R)
-                    must_be_pos = qmask_sel.view(B, 1, R).expand(B, H, R)
-                    assert torch.all(
-                        row_sum_squeezed[must_be_pos] > 0
-                    ), "Calibrated row sums must be > 0 for valid queries"
-                    # Normalize valid query rows, keep invalid query rows unchanged (original masked rows)
-                    denom_rows = torch.where(
-                        qmask_sel_b > 0, row_sum, torch.ones_like(row_sum)
-                    )
-                    normalized = torch.where(
-                        qmask_sel_b > 0,
-                        calibrated / denom_rows,
-                        sel_rows_masked,
-                    )
+                        # Sum attention per basket: (B,H,r,max_baskets)
+                        bucket_sums = torch.zeros(
+                            (B, H, r, max_baskets), device=attn.device, dtype=attn.dtype
+                        )
+                        bucket_sums = bucket_sums.scatter_add(
+                            dim=-1, index=basket_ids, src=sel_rows_masked
+                        )
 
-                    # Replace selected query rows; keep other query rows unchanged
-                    attn_calibrated = attn.clone()
-                    attn_calibrated = attn_calibrated.index_copy(2, q_idx, normalized)
+                        # Gather per-position denominators: (B,H,r,K)
+                        denom = bucket_sums.gather(dim=-1, index=basket_ids)
 
-                    self.model.encoder.layer[
-                        i
-                    ].attention.source.self__attention_0.source.nn_functional_softmax_0.output = (
-                        attn_calibrated
-                    )
+                        # Number of baskets per item: ceil(valid_len / S) -> (B,)
+                        n_baskets = ((valid_len + (S - 1)) // S).to(dtype=attn.dtype)
+                        n_baskets = n_baskets.view(B, 1, 1, 1)  # (B,1,1,1)
+
+                        # Apply calibration formula per position (masked positions remain zero)
+                        scaled = sel_rows_masked * S  # (B,H,r,K)
+                        calibrated = torch.where(
+                            denom > 0,
+                            (scaled / denom) * (1.0 / n_baskets),
+                            torch.zeros_like(scaled),
+                        )
+
+                        # Enforce valid distribution over valid tokens (sum to 1), keep pads at 0
+                        calibrated = calibrated * mask_bk
+                        row_sum = calibrated.sum(dim=-1, keepdim=True)  # (B,H, r, 1)
+                        row_sum_squeezed = row_sum.squeeze(-1)  # (B,H,r)
+                        must_be_pos = qmask_sel.view(B, 1, r).expand(B, H, r)
+                        assert torch.all(
+                            row_sum_squeezed[must_be_pos] > 0
+                        ), "Calibrated row sums must be > 0 for valid queries"
+
+                        # Normalize valid query rows, keep invalid query rows unchanged (original masked rows)
+                        denom_rows = torch.where(
+                            qmask_sel_b > 0, row_sum, torch.ones_like(row_sum)
+                        )
+                        normalized_chunk = torch.where(
+                            qmask_sel_b > 0,
+                            calibrated / denom_rows,
+                            sel_rows_masked,
+                        )
+
+                        # In-place contiguous slice assignment on the NNsight proxy (avoid LongTensor advanced indexing)
+                        self.model.encoder.layer[
+                            i
+                        ].attention.source.self__attention_0.source.nn_functional_softmax_0.output[
+                            :, :, start:end, :
+                        ] = normalized_chunk
 
                 # Request the final model output so it is materialized after the trace.
                 # We expect to access last_hidden_state downstream.
