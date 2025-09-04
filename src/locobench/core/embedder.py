@@ -113,6 +113,9 @@ class BaseEmbedder:
                     "Must specify calib_basket_size when using attention calibration"
                 )
             self.calib_basket_size = calib_basket_size
+            # Track calibration stats across the run
+            self.calib_short_seq_count: int = 0
+            self.calib_total_seq_count: int = 0
 
         elif model_name == "Alibaba-NLP/gte-multilingual-base" and xformers_available:
             print("Loading Alibaba-NLP/gte-multilingual-base with xformers support")
@@ -149,6 +152,12 @@ class BaseEmbedder:
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> Any:
         # NOTE: Calibrate either CLS-only or all query rows depending on self.calib_source_mode.
+        # Record stats about sequence lengths vs basket size before tracing (no side-effects inside trace).
+        S_stat = int(self.calib_basket_size)
+        valid_len_cpu = attention_mask.sum(dim=1)
+        # Update counters: total sequences seen and how many are shorter than S
+        self.calib_total_seq_count += int(valid_len_cpu.numel())
+        self.calib_short_seq_count += int((valid_len_cpu < S_stat).sum().item())
         with self.model.trace() as tracer:
             with tracer.invoke(input_ids=input_ids, attention_mask=attention_mask):
                 for i in range(self.calib_layer_idx_start, self.calib_layer_idx_end):
@@ -177,9 +186,6 @@ class BaseEmbedder:
                     valid_len = mask.sum(dim=1)  # (B,)
                     assert torch.all(valid_len > 0), "Empty sequences are not supported"
                     S = int(self.calib_basket_size)
-                    assert torch.all(
-                        valid_len >= S
-                    ), f"Insufficient valid tokens for calibration: found per-batch {valid_len.tolist()}, required >= {S}"
                     pos = torch.arange(K, device=attn.device).unsqueeze(0)  # (1,K)
                     right_padded = (pos < valid_len.unsqueeze(1)).to(mask.dtype)
                     assert torch.equal(

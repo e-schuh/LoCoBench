@@ -444,6 +444,19 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
     }
     config["run_dir"] = run_dir
 
+    # Record how many sequences had valid_len < S during calibration (per embedder)
+    calib_short_counts = {}
+    if sa_apply:
+        calib_short_counts["standalone"] = getattr(
+            standalone_embedder, "calib_short_seq_count", 0
+        )
+    if lc_apply:
+        calib_short_counts["latechunk"] = getattr(
+            latechunk_embedder, "calib_short_seq_count", 0
+        )
+    if calib_short_counts:
+        config["calibration_short_counts"] = calib_short_counts
+
     # Save output config (include effective calibration params for reproducibility)
     config["calibration_effective"] = {
         "standalone": {
