@@ -268,14 +268,13 @@ class BaseEmbedder:
                         sel_rows_masked,
                     )
 
-                    # Replace selected query rows; keep other query rows unchanged
-                    attn_calibrated = attn.clone()
-                    attn_calibrated = attn_calibrated.index_copy(2, q_idx, normalized)
+                    # Replace selected query rows in-place to avoid extra full-tensor allocation
+                    attn.index_copy_(2, q_idx, normalized)
 
                     self.model.encoder.layer[
                         i
                     ].attention.source.self__attention_0.source.nn_functional_softmax_0.output = (
-                        attn_calibrated
+                        attn
                     )
 
                 # Request the final model output so it is materialized after the trace.
