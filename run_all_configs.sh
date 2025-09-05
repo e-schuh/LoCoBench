@@ -51,6 +51,9 @@ echo "----------------------------------------"
 total=${#CONFIG_FILES[@]}
 current=1
 
+# Track failed configs
+FAILED_CONFIGS=()
+
 # Loop through all config files
 for config_file in "${CONFIG_FILES[@]}"; do
     config_name=$(basename "$config_file")
@@ -65,12 +68,8 @@ for config_file in "${CONFIG_FILES[@]}"; do
         echo "✓ Successfully completed: $config_name"
     else
         echo "✗ Failed: $config_name"
-        echo "Do you want to continue with remaining configs? (y/n)"
-        read -r response
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            echo "Stopping execution."
-            exit 1
-        fi
+        # Record failed config and continue
+        FAILED_CONFIGS+=("$config_file")
     fi
     
     echo "----------------------------------------"
@@ -79,3 +78,14 @@ done
 
 echo "All embedding computations completed!"
 echo "Processed $total config files from $CONFIG_FOLDER"
+
+# Print summary of failed configs, if any
+if [ ${#FAILED_CONFIGS[@]} -gt 0 ]; then
+    echo ""
+    echo "Summary: ${#FAILED_CONFIGS[@]} failed run(s):"
+    for failed in "${FAILED_CONFIGS[@]}"; do
+        echo "  - $failed"
+    done
+else
+    echo "All runs succeeded."
+fi
