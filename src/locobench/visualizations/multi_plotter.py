@@ -6,6 +6,7 @@ This module provides a unified approach to plotting multiple analysis results.
 import os
 import re
 from typing import List, Dict, Any, Optional, Tuple, Callable
+import json
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
@@ -121,6 +122,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         show_plot: bool = True,
         return_full_results: bool = False,
         single_model_mode: Optional[bool] = None,
+        split_plots_by_source_lang: bool = False,
     ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         Analyze and plot position-based similarity metrics for multiple experiments in a grid,
@@ -180,6 +182,8 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         show_plot: bool = True,
         return_full_results: bool = False,
         single_model_mode: Optional[bool] = None,
+        split_plots_by_target_lang: bool = False,
+        split_plots_by_source_lang: bool = False,
     ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         Analyze and plot position-based similarity metrics for multiple models in a grid,
@@ -204,23 +208,181 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             If return_full_results is True, returns a dictionary with model names as keys and
             lists of result dictionaries as values
         """
+        # Sanity: both split flags cannot be true at the same time
+        if split_plots_by_target_lang and split_plots_by_source_lang:
+            raise ValueError(
+                "Only one of split_plots_by_target_lang or split_plots_by_source_lang may be True."
+            )
+
         # Create a custom single plotter that shows different models instead of matryoshka dimensions
         multi_model_single_plotter = MultiModelPositionSimilaritySinglePlotter(
             model_pooling_strats, paths
         )
 
-        # Call the modified version of analyze_and_plot_multiple_results
-        return self._analyze_and_plot_multiple_results_multi_model(
+        # If not splitting by target language, keep existing behavior
+        if not split_plots_by_target_lang and not split_plots_by_source_lang:
+            return self._analyze_and_plot_multiple_results_multi_model(
+                paths=paths,
+                model_pooling_strats=model_pooling_strats,
+                analysis_type=self.analysis_type,
+                document_embedding_type=self.document_embedding_type,
+                title="Similarity between Document-Level Embedding and Standalone Segment Embeddings",
+                pooling_legend_type="segment_standalone_and_document",
+                subplotter=multi_model_single_plotter,  # Pass the object, not the method
+                pooling_strategy_segment_standalone="cls",  # Will be overridden by model-specific strategies
+                pooling_strategy_document="cls",  # Will be overridden by model-specific strategies
+                matryoshka_dimensions=None,  # We don't use matryoshka for multi-model plot
+                show_segment_lengths=show_segment_lengths,
+                show_lengths=show_lengths,
+                figure_width=figure_width,
+                subplot_height=subplot_height,
+                save_plot=save_plot,
+                save_path=save_path,
+                show_plot=show_plot,
+                return_full_results=return_full_results,
+                single_model_mode=single_model_mode,
+            )
+
+        # Split the inputs and ensure identical formatting across all figures
+        from ..core.segment_embedding_analysis import load_exp_info
+
+        # Build grouping map based on requested split dimension
+        groups: Dict[str, List[str | Path]] = defaultdict(list)
+        path_to_model: Dict[str | Path, str] = {}
+        for p in paths:
+            exp = load_exp_info(p)
+            if split_plots_by_target_lang:
+                key = (
+                    exp.get("target_lang")
+                    if exp.get("target_lang") is not None
+                    else "mono"
+                )
+            else:
+                key = exp.get("source_lang", "unknown")
+            groups[str(key)].append(p)
+            path_to_model[p] = exp["model_name"]
+
+        # Pre-compute a global ylim across ALL paths to guarantee identical y-axis across figures
+        doc_seg_analyzer = DocumentSegmentSimilarityAnalyzer()
+        all_y_values: List[float] = []
+        for p in paths:
+            model_name = path_to_model[p]
+            pooling = model_pooling_strats.get(model_name, "cls")
+            res = doc_seg_analyzer.run_position_analysis(
+                path=p,
+                document_embedding_type=self.document_embedding_type,
+                pooling_strategy_segment_standalone=pooling,
+                pooling_strategy_document=pooling,
+                matryoshka_dimensions=None,
+            )
+            all_y_values.extend(res["position_means"])
+            all_y_values.extend(res["position_ci_lower"])
+            all_y_values.extend(res["position_ci_upper"])
+
+        global_ylim: Optional[Tuple[float, float]] = None
+        if all_y_values:
+            y_min = min(all_y_values)
+            y_max = max(all_y_values)
+            y_range = y_max - y_min
+            margin = y_range * 0.05
+            global_ylim = (y_min - margin, y_max + margin)
+
+        # Pre-compute a global token length ylim if token lengths are shown
+        global_token_ylim: Optional[Tuple[float, float]] = None
+        if show_lengths:
+            token_len_results = compute_position_token_lengths(paths)
+            token_vals: List[float] = []
+            for v in token_len_results.values():
+                token_vals.extend(v.get("position_means", []))
+            if token_vals:
+                tmin = min(token_vals)
+                tmax = max(token_vals)
+                tr = tmax - tmin
+                tmargin = tr * 0.05
+                global_token_ylim = (max(0, tmin - tmargin), tmax + tmargin)
+
+        # Run one figure per group using the same ylim/token_ylim
+        merged_results: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for grp_key, grp_paths in groups.items():
+            # Build per-figure save path when requested
+            per_save_path = None
+            if save_plot and save_path is not None:
+                base, ext = os.path.splitext(str(save_path))
+                suffix = (
+                    f"_tgt-{grp_key}"
+                    if split_plots_by_target_lang
+                    else f"_src-{grp_key}"
+                )
+                per_save_path = f"{base}{suffix}{ext}"
+
+            out = self._analyze_and_plot_multiple_results_multi_model(
+                paths=grp_paths,
+                model_pooling_strats=model_pooling_strats,
+                analysis_type=self.analysis_type,
+                document_embedding_type=self.document_embedding_type,
+                title="Similarity between Document-Level Embedding and Standalone Segment Embeddings",
+                pooling_legend_type="segment_standalone_and_document",
+                subplotter=multi_model_single_plotter,
+                pooling_strategy_segment_standalone="cls",
+                pooling_strategy_document="cls",
+                matryoshka_dimensions=None,
+                show_segment_lengths=show_segment_lengths,
+                show_lengths=show_lengths,
+                figure_width=figure_width,
+                subplot_height=subplot_height,
+                save_plot=save_plot,
+                save_path=per_save_path,
+                show_plot=show_plot,
+                return_full_results=return_full_results,
+                single_model_mode=single_model_mode,
+                global_ylim_override=global_ylim,
+                global_token_ylim_override=global_token_ylim,
+            )
+
+            # Merge results if requested
+            if return_full_results and isinstance(out, dict) and "model_results" in out:
+                for k, v in out["model_results"].items():
+                    merged_results[k].extend(v)
+
+        return {"model_results": dict(merged_results)} if return_full_results else None
+
+    def plot_multi_calibrations(
+        self,
+        paths: List[str | Path],
+        pooling_strategy: str = "cls",
+        show_segment_lengths: bool = False,
+        show_lengths: bool = False,
+        figure_width: int = 15,
+        subplot_height: int = 5,
+        save_plot: bool = False,
+        save_path: Optional[str] = None,
+        show_plot: bool = True,
+        return_full_results: bool = False,
+        single_model_mode: Optional[bool] = None,
+        split_plots_by_target_lang: bool = False,
+        split_plots_by_source_lang: bool = False,
+    ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+        """
+        Similar to plot_multi_models, but shows different attention calibration settings as
+        differently colored lines within each subplot for a SINGLE model (paths belong to
+        the same base model, typically mGTE).
+
+        Grouping of subplots (experiment instances) remains by (concat_size, lang pair).
+        Calibration labels are derived from each path's embedding_config.json -> calibration_effective.
+        """
+        # Sanity: both split flags cannot be true at the same time
+        if split_plots_by_target_lang and split_plots_by_source_lang:
+            raise ValueError(
+                "Only one of split_plots_by_target_lang or split_plots_by_source_lang may be True."
+            )
+
+        return self._analyze_and_plot_multiple_results_multi_calibration(
             paths=paths,
-            model_pooling_strats=model_pooling_strats,
+            pooling_strategy_segment_standalone=pooling_strategy,
+            pooling_strategy_document=pooling_strategy,
             analysis_type=self.analysis_type,
             document_embedding_type=self.document_embedding_type,
             title="Similarity between Document-Level Embedding and Standalone Segment Embeddings",
-            pooling_legend_type="segment_standalone_and_document",
-            subplotter=multi_model_single_plotter,  # Pass the object, not the method
-            pooling_strategy_segment_standalone="cls",  # Will be overridden by model-specific strategies
-            pooling_strategy_document="cls",  # Will be overridden by model-specific strategies
-            matryoshka_dimensions=None,  # We don't use matryoshka for multi-model plot
             show_segment_lengths=show_segment_lengths,
             show_lengths=show_lengths,
             figure_width=figure_width,
@@ -230,7 +392,404 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             show_plot=show_plot,
             return_full_results=return_full_results,
             single_model_mode=single_model_mode,
+            split_plots_by_target_lang=split_plots_by_target_lang,
+            split_plots_by_source_lang=split_plots_by_source_lang,
         )
+
+    def _analyze_and_plot_multiple_results_multi_calibration(
+        self,
+        paths: List[str | Path],
+        analysis_type: str = "position",
+        document_embedding_type: str = "document-level",
+        title: str = "Similarity between Document-Level Embedding and Standalone Segment Embeddings",
+        subplotter: Callable = None,
+        pooling_strategy_segment_standalone: str = "cls",
+        pooling_strategy_document: str = "cls",
+        matryoshka_dimensions: Optional[List[int]] = None,
+        show_segment_lengths: bool = False,
+        show_lengths: bool = False,
+        figure_width: int = 15,
+        subplot_height: int = 4,
+        save_plot: bool = False,
+        save_path: Optional[str] = None,
+        show_plot: bool = True,
+        return_full_results: bool = False,
+        single_model_mode: Optional[bool] = None,
+        split_plots_by_target_lang: bool = False,
+        split_plots_by_source_lang: bool = False,
+    ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+        """
+        Multi-plot where each subplot corresponds to one experiment instance (concat_size, lang pair),
+        and each line corresponds to a different attention calibration found in the given paths.
+
+        Reuses the grid/axis layout from analyze_and_plot_multiple_results by providing a custom
+        single-plotter and suppressing the default legend so we can inject a calibration legend.
+        """
+        from ..core.segment_embedding_analysis import load_exp_info
+
+        # --- Group paths by (concat_size, lang_key) and extract calibration labels ---
+        def lang_key_from_exp(exp: Dict[str, Any]) -> str:
+            src = exp.get("source_lang", "unknown")
+            tgt = exp.get("target_lang")
+            return src if tgt is None else f"{src}_{tgt}"
+
+        def build_calibration_label(calib: Dict[str, Any]) -> str:
+            sa = calib.get("standalone", {})
+            lc = calib.get("latechunk", {})
+
+            sa_apply = bool(sa.get("apply_attn_calibration", False))
+            lc_apply = bool(lc.get("apply_attn_calibration", False))
+
+            if sa_apply and lc_apply:
+                # Require identical parameters for a unified label
+                sa_tuple = (
+                    str(sa.get("calib_layers")),
+                    str(sa.get("calib_source_tokens")),
+                    str(sa.get("calib_basket_size")),
+                )
+                lc_tuple = (
+                    str(lc.get("calib_layers")),
+                    str(lc.get("calib_source_tokens")),
+                    str(lc.get("calib_basket_size")),
+                )
+                assert (
+                    sa_tuple == lc_tuple
+                ), "Calibration parameters for standalone and latechunk must match when both are applied."
+                return f"{sa_tuple[0]}--{sa_tuple[1]}--{sa_tuple[2]}"
+
+            if (not sa_apply) and lc_apply:
+                return f"lc-{lc.get('calib_layers')}--lc-{lc.get('calib_source_tokens')}--lc-{lc.get('calib_basket_size')}"
+
+            # If only standalone applies (rare), fail fast as undefined in spec
+            assert not (
+                sa_apply and not lc_apply
+            ), "Standalone-only calibration not supported in this plot."
+            # Neither applies
+            assert False, "Neither standalone nor latechunk calibration is applied."
+
+        # Map config_key -> list of (path, calibration_label)
+        config_groups: Dict[Tuple[int, str], List[Tuple[str | Path, str]]] = (
+            defaultdict(list)
+        )
+        config_to_model: Dict[Tuple[int, str], str] = {}
+        all_labels: List[str] = []
+        for p in paths:
+            exp = load_exp_info(p)
+            key = (exp["concat_size"], lang_key_from_exp(exp))
+            # Read calibration label from embedding_config.json within path
+            config_path = Path(p) / "embedding_config.json"
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            if "calibration_effective" in cfg:
+                label = build_calibration_label(cfg["calibration_effective"])
+            else:
+                label = "no attention calibration"
+            config_groups[key].append((p, label))
+            all_labels.append(label)
+            config_to_model[key] = exp["model_name"]
+
+        # Unique labels and color mapping (consistent across figure)
+        unique_labels = list(dict.fromkeys(all_labels))
+        base_colors = [
+            "#ff7f0e",
+            "#7303b9",
+            "#8c564b",
+            "#e956b1",
+            "#7f7f7f",
+            "#bcbd22",
+        ]
+        label_colors: Dict[str, str] = {}
+        for i, lab in enumerate(unique_labels):
+            label_colors[lab] = base_colors[i % len(base_colors)]
+        # Force a consistent color for the baseline (no calibration)
+        if "no attention calibration" in label_colors:
+            label_colors["no attention calibration"] = "blue"
+
+        # Pre-compute results for all (config, path)
+        doc_seg_analyzer = DocumentSegmentSimilarityAnalyzer()
+        all_results: Dict[Tuple[Tuple[int, str], str], Dict[str, Any]] = {}
+        all_y_values: List[float] = []
+        selected_paths_for_layout: List[str | Path] = []
+
+        for cfg_key, pl in config_groups.items():
+            # pick first path as base for layout/labels
+            if pl:
+                selected_paths_for_layout.append(pl[0][0])
+            for path, _lab in pl:
+                res = doc_seg_analyzer.run_position_analysis(
+                    path=path,
+                    document_embedding_type=document_embedding_type,
+                    pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+                    pooling_strategy_document=pooling_strategy_document,
+                    matryoshka_dimensions=None,
+                )
+                all_results[(cfg_key, str(path))] = res
+                all_y_values.extend(res["position_means"])
+                all_y_values.extend(res["position_ci_lower"])
+                all_y_values.extend(res["position_ci_upper"])
+
+        # Global y-limits with margin
+        global_ylim: Optional[Tuple[float, float]] = None
+        if all_y_values:
+            y_min = min(all_y_values)
+            y_max = max(all_y_values)
+            y_range = y_max - y_min
+            margin = y_range * 0.05
+            global_ylim = (y_min - margin, y_max + margin)
+
+        # Global token y-limits if required
+        global_token_ylim: Optional[Tuple[float, float]] = None
+        if show_lengths:
+            token_len_results = compute_position_token_lengths(paths)
+            token_vals: List[float] = []
+            for v in token_len_results.values():
+                token_vals.extend(v.get("position_means", []))
+            if token_vals:
+                tmin = min(token_vals)
+                tmax = max(token_vals)
+                tr = tmax - tmin
+                tmargin = tr * 0.05
+                global_token_ylim = (max(0, tmin - tmargin), tmax + tmargin)
+
+        # Custom subplotter that plots all calibrations for a config using precomputed results
+        class _CalibrationSubplotter:
+            def __init__(
+                self, all_results, config_groups, label_colors, ylim, token_ylim
+            ):
+                self._all_results = all_results
+                self._config_groups = config_groups
+                self._label_colors = label_colors
+                self._ylim = ylim
+                self._token_ylim = token_ylim
+
+            def plot_position_similarities_in_subplot(self, ax, base_result, **kwargs):
+                # Enforce fixed limits across subplots
+                kwargs["ylim"] = self._ylim
+                if self._token_ylim is not None:
+                    kwargs["token_ylim"] = self._token_ylim
+
+                # Basic positions from base_result
+                positions = list(range(1, len(base_result["position_means"]) + 1))
+
+                # Identify config key of this base_result
+                concat_size = base_result["concat_size"]
+                src = base_result.get("source_lang", "unknown")
+                tgt = base_result.get("target_lang")
+                lang_key = src if tgt is None else f"{src}_{tgt}"
+                cfg_key = (concat_size, lang_key)
+
+                # Plot each calibration line
+                if cfg_key in self._config_groups:
+                    for path, lab in self._config_groups[cfg_key]:
+                        res = self._all_results.get((cfg_key, str(path)))
+                        assert res is not None, "Missing precomputed result"
+                        color = self._label_colors.get(lab, "black")
+                        ax.plot(
+                            positions,
+                            res["position_means"],
+                            "o-",
+                            color=color,
+                            linewidth=2,
+                            label=lab,
+                        )
+                        for pos, ci_lo, ci_hi in zip(
+                            positions,
+                            res["position_ci_lower"],
+                            res["position_ci_upper"],
+                        ):
+                            rect = plt.Rectangle(
+                                (pos - 0.4 / 2, ci_lo),
+                                0.4,
+                                ci_hi - ci_lo,
+                                color=color,
+                                alpha=0.2,
+                            )
+                            ax.add_patch(rect)
+
+                # Draw token lengths from base_result if requested
+                show_lengths_local = kwargs.get("show_lengths", False)
+                show_token_ylabel = kwargs.get("show_token_ylabel", True)
+                if show_lengths_local and "token_lengths" in base_result:
+                    ax2 = ax.twinx()
+                    token_means = base_result["token_lengths"]["position_means"]
+                    ax2.bar(
+                        positions,
+                        token_means,
+                        alpha=0.3,
+                        color="gray",
+                        width=0.6,
+                        zorder=1,
+                    )
+                    if self._token_ylim is not None:
+                        ax2.set_ylim(self._token_ylim)
+                    if show_token_ylabel:
+                        ax2.set_ylabel("Token Length", color="gray")
+                    ax2.tick_params(axis="y", labelcolor="gray")
+                    ax2.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
+
+                # Axis labels and title
+                ax.set_xlabel("Position")
+                ax.set_ylabel("Cosine Similarity")
+
+                if kwargs.get("show_title", True):
+                    if tgt and src:
+                        title_text = f"Languages: [{tgt}, {src}, ..., {src}]"
+                    elif src:
+                        title_text = f"Languages: [{src}, ..., {src}]"
+                    else:
+                        title_text = f"Concat Size: {concat_size}"
+                    range_id = base_result.get("range_id", "N/A")
+                    if kwargs.get("show_segment_lengths", False) and range_id != "N/A":
+                        title_text += f"; SL:: {range_id}"
+                    ax.set_title(title_text, fontsize=11)
+
+                ax.set_xticks(positions)
+                if self._ylim is not None:
+                    ax.set_ylim(self._ylim)
+                    y_range = self._ylim[1] - self._ylim[0]
+                    ax.yaxis.set_major_formatter(
+                        FormatStrFormatter("%.2f" if y_range < 0.3 else "%.1f")
+                    )
+                else:
+                    ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+                ax.grid(True, linestyle="--", alpha=0.7)
+
+        def render_one_figure(
+            group_paths: List[str | Path], per_save_path: Optional[str]
+        ):
+            # Build per-figure config subset and base paths
+            # Columns: languages in first-seen order; Rows: concat sizes ascending
+            filtered_config_groups: Dict[
+                Tuple[int, str], List[Tuple[str | Path, str]]
+            ] = defaultdict(list)
+            # Determine language order from input paths
+            lang_order: List[str] = []
+            seen_langs: set[str] = set()
+            size_set: set[int] = set()
+            for p in group_paths:
+                exp = load_exp_info(p)
+                lang = lang_key_from_exp(exp)
+                if lang not in seen_langs:
+                    seen_langs.add(lang)
+                    lang_order.append(lang)
+                size_set.add(exp["concat_size"])
+            size_order: List[int] = sorted(size_set)
+
+            base_paths: List[str | Path] = []
+            for lang in lang_order:
+                for size in size_order:
+                    cfg_key = (size, lang)
+                    if cfg_key in config_groups:
+                        filtered_config_groups[cfg_key] = config_groups[cfg_key]
+                        if config_groups[cfg_key]:
+                            base_paths.append(config_groups[cfg_key][0][0])
+
+            subplotter_obj = _CalibrationSubplotter(
+                all_results,
+                filtered_config_groups,
+                label_colors,
+                global_ylim,
+                global_token_ylim,
+            )
+
+            analyze_and_plot_multiple_results(
+                paths=base_paths,
+                analysis_type=analysis_type,
+                document_embedding_type=document_embedding_type,
+                title=title,
+                pooling_legend_type="segment_standalone_and_document",
+                subplotter=subplotter_obj.plot_position_similarities_in_subplot,
+                pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+                pooling_strategy_document=pooling_strategy_document,
+                matryoshka_dimensions=None,
+                show_segment_lengths=show_segment_lengths,
+                show_lengths=show_lengths,
+                figure_width=figure_width,
+                subplot_height=subplot_height,
+                save_plot=False,
+                save_path=None,
+                show_plot=False,
+                return_full_results=False,
+                single_model_mode=(
+                    True if single_model_mode is None else single_model_mode
+                ),
+                suppress_default_legend=True,
+            )
+
+            # Inject calibration legend at the bottom
+            fig = plt.gcf()
+            handles = []
+            for lab in unique_labels:
+                h = mlines.Line2D(
+                    [],
+                    [],
+                    color=label_colors[lab],
+                    marker="o",
+                    linestyle="-",
+                    linewidth=2,
+                    label=lab,
+                )
+                handles.append(h)
+            ci_patch = mpatches.Patch(
+                color="blue", alpha=0.2, label="95% Confidence Interval"
+            )
+            handles.append(ci_patch)
+            ncol = min(len(handles), 6)
+            # Add extra bottom margin to create more space between last row of subplots and the legend
+            plt.subplots_adjust(bottom=0.14)
+            fig.legend(
+                handles=handles,
+                loc="lower center",
+                bbox_to_anchor=(0.5, 0.02),
+                ncol=ncol,
+                fontsize=9,
+                frameon=False,
+                columnspacing=2.0,
+                handletextpad=1.2,
+            )
+
+            if save_plot:
+                out_path = per_save_path
+                if out_path is None:
+                    filename = f"multi_position_analysis_{pooling_strategy_segment_standalone}_{pooling_strategy_document}.png"
+                    out_path = os.path.join(str(group_paths[0]), filename)
+                plt.savefig(out_path, dpi=300, bbox_inches="tight")
+                print(f"Plot saved to {out_path}")
+            if show_plot:
+                plt.show()
+
+        # Handle optional splitting into multiple figures
+        if not split_plots_by_target_lang and not split_plots_by_source_lang:
+            render_one_figure(paths, save_path)
+            return None
+
+        # Build groups
+        groups: Dict[str, List[str | Path]] = defaultdict(list)
+        for p in paths:
+            exp = load_exp_info(p)
+            if split_plots_by_target_lang:
+                key = (
+                    exp.get("target_lang")
+                    if exp.get("target_lang") is not None
+                    else "mono"
+                )
+            else:
+                key = exp.get("source_lang", "unknown")
+            groups[str(key)].append(p)
+
+        for grp_key, grp_paths in groups.items():
+            per_save_path = None
+            if save_plot and save_path is not None:
+                base, ext = os.path.splitext(str(save_path))
+                suffix = (
+                    f"_tgt-{grp_key}"
+                    if split_plots_by_target_lang
+                    else f"_src-{grp_key}"
+                )
+                per_save_path = f"{base}{suffix}{ext}"
+            render_one_figure(grp_paths, per_save_path)
+
+        return None
 
     def _analyze_and_plot_multiple_results_multi_model(
         self,
@@ -253,6 +812,8 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         show_plot: bool = True,
         return_full_results: bool = False,
         single_model_mode: Optional[bool] = None,
+        global_ylim_override: Optional[Tuple[float, float]] = None,
+        global_token_ylim_override: Optional[Tuple[float, float]] = None,
     ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         Modified version of analyze_and_plot_multiple_results that shows different models instead of matryoshka dimensions.
@@ -272,7 +833,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             # Use source_lang and target_lang from the experiment info for proper language identification
             source_lang = exp_info.get("source_lang", "unknown")
             target_lang = exp_info.get("target_lang", None)
-            
+
             # Create language key that distinguishes between monolingual and multilingual experiments
             if target_lang is None:
                 lang_key = source_lang  # Monolingual: e.g., "de"
@@ -307,15 +868,18 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
                 all_y_values.extend(result["position_ci_lower"])
                 all_y_values.extend(result["position_ci_upper"])
 
-        # Calculate global y-limits with margin
-        if all_y_values:
-            y_min = min(all_y_values)
-            y_max = max(all_y_values)
-            y_range = y_max - y_min
-            margin = y_range * 0.05
-            global_ylim = (y_min - margin, y_max + margin)
+        # Calculate global y-limits with margin (or use override)
+        if global_ylim_override is not None:
+            global_ylim = global_ylim_override
         else:
-            global_ylim = None
+            if all_y_values:
+                y_min = min(all_y_values)
+                y_max = max(all_y_values)
+                y_range = y_max - y_min
+                margin = y_range * 0.05
+                global_ylim = (y_min - margin, y_max + margin)
+            else:
+                global_ylim = None
 
         # Create a custom subplotter that uses pre-computed results
         class CustomMultiModelSubplotter:
@@ -326,16 +890,21 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
                 config_groups,
                 model_pooling_strats,
                 global_ylim,
+                global_token_ylim,
             ):
                 self.original_subplotter_obj = original_subplotter_obj
                 self.all_model_results = all_model_results
                 self.config_groups = config_groups
                 self.model_pooling_strats = model_pooling_strats
                 self.global_ylim = global_ylim
+                self.global_token_ylim = global_token_ylim
 
             def plot_position_similarities_in_subplot(self, ax, base_result, **kwargs):
                 # Override ylim with our global one
                 kwargs["ylim"] = self.global_ylim
+                # Ensure token length axis uses identical limits across figures when provided
+                if self.global_token_ylim is not None:
+                    kwargs["token_ylim"] = self.global_token_ylim
                 return self.original_subplotter_obj.plot_position_similarities_in_subplot_with_precomputed(
                     ax,
                     base_result,
@@ -351,6 +920,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             config_groups,
             model_pooling_strats,
             global_ylim,
+            global_token_ylim_override,
         )
 
         # Run analysis for each unique config (use first model for each config as base)
@@ -411,6 +981,7 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
         show_plot: bool = True,
         return_full_results: bool = False,
         single_model_mode: Optional[bool] = None,
+        split_plots_by_source_lang: bool = False,
     ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         Analyze and plot position-based similarity metrics for multiple experiments in a grid,
@@ -436,26 +1007,129 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
 
         position_similarity_single_plotter = PositionSimilaritySinglePlotter()
 
-        return analyze_and_plot_multiple_results(
-            paths=paths,
-            analysis_type=self.analysis_type,
-            document_embedding_type=self.document_embedding_type,
-            title="Similarity between Contextualized Segment Embeddings and Standalone Segment Embeddings",
-            pooling_legend_type="segment_standalone",
-            subplotter=position_similarity_single_plotter.plot_position_similarities_in_subplot,
-            pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
-            pooling_strategy_document=pooling_strategy_document,
-            matryoshka_dimensions=matryoshka_dimensions,
-            show_segment_lengths=show_segment_lengths,
-            show_lengths=show_lengths,
-            figure_width=figure_width,
-            subplot_height=subplot_height,
-            save_plot=save_plot,
-            save_path=save_path,
-            show_plot=show_plot,
-            return_full_results=return_full_results,
-            single_model_mode=single_model_mode,
+        # If not splitting, keep existing behavior
+        if not split_plots_by_source_lang:
+            return analyze_and_plot_multiple_results(
+                paths=paths,
+                analysis_type=self.analysis_type,
+                document_embedding_type=self.document_embedding_type,
+                title="Similarity between Contextualized Segment Embeddings and Standalone Segment Embeddings",
+                pooling_legend_type="segment_standalone",
+                subplotter=position_similarity_single_plotter.plot_position_similarities_in_subplot,
+                pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+                pooling_strategy_document=pooling_strategy_document,
+                matryoshka_dimensions=matryoshka_dimensions,
+                show_segment_lengths=show_segment_lengths,
+                show_lengths=show_lengths,
+                figure_width=figure_width,
+                subplot_height=subplot_height,
+                save_plot=save_plot,
+                save_path=save_path,
+                show_plot=show_plot,
+                return_full_results=return_full_results,
+                single_model_mode=single_model_mode,
+            )
+
+        # Split by source_lang with identical formatting across all figures
+        from ..core.segment_embedding_analysis import load_exp_info
+
+        # Group paths by source_lang
+        groups: Dict[str, List[str | Path]] = defaultdict(list)
+        for p in paths:
+            exp = load_exp_info(p)
+            key = exp.get("source_lang", "unknown")
+            groups[str(key)].append(p)
+
+        # Pre-compute global y-limits across ALL paths for identical scaling
+        doc_seg_analyzer = DocumentSegmentSimilarityAnalyzer()
+        all_y_values: List[float] = []
+        for p in paths:
+            res = doc_seg_analyzer.run_position_analysis(
+                path=p,
+                document_embedding_type=self.document_embedding_type,
+                pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+                pooling_strategy_document=pooling_strategy_document,
+                matryoshka_dimensions=None,
+            )
+            all_y_values.extend(res["position_means"])
+            all_y_values.extend(res["position_ci_lower"])
+            all_y_values.extend(res["position_ci_upper"])
+
+        global_ylim: Optional[Tuple[float, float]] = None
+        if all_y_values:
+            y_min = min(all_y_values)
+            y_max = max(all_y_values)
+            y_range = y_max - y_min
+            margin = y_range * 0.05
+            global_ylim = (y_min - margin, y_max + margin)
+
+        # Pre-compute global token length y-limits if requested
+        global_token_ylim: Optional[Tuple[float, float]] = None
+        if show_lengths:
+            token_len_results = compute_position_token_lengths(paths)
+            token_vals: List[float] = []
+            for v in token_len_results.values():
+                token_vals.extend(v.get("position_means", []))
+            if token_vals:
+                tmin = min(token_vals)
+                tmax = max(token_vals)
+                tr = tmax - tmin
+                tmargin = tr * 0.05
+                global_token_ylim = (max(0, tmin - tmargin), tmax + tmargin)
+
+        # Wrapper subplotter to enforce global limits
+        class _FixedLimitsSubplotter:
+            def __init__(self, original, ylim, token_ylim):
+                self._orig = original
+                self._ylim = ylim
+                self._token_ylim = token_ylim
+
+            def plot_position_similarities_in_subplot(self, ax, base_result, **kwargs):
+                if self._ylim is not None:
+                    kwargs["ylim"] = self._ylim
+                if self._token_ylim is not None:
+                    kwargs["token_ylim"] = self._token_ylim
+                return self._orig(ax, base_result, **kwargs)
+
+        wrapper = _FixedLimitsSubplotter(
+            position_similarity_single_plotter.plot_position_similarities_in_subplot,
+            global_ylim,
+            global_token_ylim,
         )
+
+        merged_results: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for src_key, src_paths in groups.items():
+            per_save_path = None
+            if save_plot and save_path is not None:
+                base, ext = os.path.splitext(str(save_path))
+                per_save_path = f"{base}_src-{src_key}{ext}"
+
+            out = analyze_and_plot_multiple_results(
+                paths=src_paths,
+                analysis_type=self.analysis_type,
+                document_embedding_type=self.document_embedding_type,
+                title="Similarity between Contextualized Segment Embeddings and Standalone Segment Embeddings",
+                pooling_legend_type="segment_standalone",
+                subplotter=wrapper.plot_position_similarities_in_subplot,
+                pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
+                pooling_strategy_document=pooling_strategy_document,
+                matryoshka_dimensions=matryoshka_dimensions,
+                show_segment_lengths=show_segment_lengths,
+                show_lengths=show_lengths,
+                figure_width=figure_width,
+                subplot_height=subplot_height,
+                save_plot=save_plot,
+                save_path=per_save_path,
+                show_plot=show_plot,
+                return_full_results=return_full_results,
+                single_model_mode=single_model_mode,
+            )
+
+            if return_full_results and isinstance(out, dict) and "model_results" in out:
+                for k, v in out["model_results"].items():
+                    merged_results[k].extend(v)
+
+        return {"model_results": dict(merged_results)} if return_full_results else None
 
 
 class PositionalDirectionalLeakageMultiPlotter:
@@ -619,6 +1293,7 @@ def analyze_and_plot_multiple_results(
     show_plot: bool = True,
     return_full_results: bool = False,
     single_model_mode: Optional[bool] = None,
+    suppress_default_legend: bool = False,
 ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
     """
     Analyze and plot multiple experiment results in a grid, organized by model name and concat size.
@@ -1126,7 +1801,7 @@ def analyze_and_plot_multiple_results(
             is_multi_model = hasattr(subplotter, "__self__") and hasattr(
                 subplotter.__self__, "original_subplotter_obj"
             )
-            
+
             if is_multi_model:
                 # For multi-model plots, don't include model name in title
                 fig.suptitle(
@@ -1137,7 +1812,8 @@ def analyze_and_plot_multiple_results(
                 )
             else:
                 # Include model name in the title for single model
-                title_with_model = f"{title} - {single_model_name}"
+                # title_with_model = f"{title} - {single_model_name}"
+                title_with_model = title
                 fig.suptitle(
                     title_with_model,
                     fontsize=22,
@@ -1222,46 +1898,122 @@ def analyze_and_plot_multiple_results(
             )
 
     # Add custom legends based on analysis type
-    if single_model_mode:
-        legend_y = 0.01  # Lower position for single model due to new layout
-    else:
-        legend_y = 0.05
-    if analysis_type == "position":
-        # Position analysis legend - check if we're using multi-model plotter
-        is_multi_model = hasattr(subplotter, "__self__") and hasattr(
-            subplotter.__self__, "original_subplotter_obj"
-        )
+    if not suppress_default_legend:
+        if single_model_mode:
+            legend_y = 0.01  # Lower position for single model due to new layout
+        else:
+            legend_y = 0.05
 
-        handles = []
-        labels = []
+        if analysis_type == "position":
+            # Position analysis legend - check if we're using multi-model plotter
+            is_multi_model = hasattr(subplotter, "__self__") and hasattr(
+                subplotter.__self__, "original_subplotter_obj"
+            )
 
-        if is_multi_model:
-            # Show model names instead of matryoshka dimensions
-            model_colors = {"mGTE": "blue", "jina-v3": "red", "qwen3-0.6B": "green"}
+            handles = []
+            labels = []
 
-            for model_name, color in model_colors.items():
-                model_line = mlines.Line2D(
+            if is_multi_model:
+                # Show model names instead of matryoshka dimensions
+                model_colors = {"mGTE": "blue", "jina-v3": "red", "qwen3-0.6B": "green"}
+
+                for model_name, color in model_colors.items():
+                    model_line = mlines.Line2D(
+                        [],
+                        [],
+                        color=color,
+                        marker="o",
+                        linestyle="-",
+                        linewidth=2,
+                        label=model_name,
+                    )
+                    handles.append(model_line)
+            else:
+                # Always include full embedding
+                mean_line = mlines.Line2D(
                     [],
                     [],
-                    color=color,
+                    color="red",
                     marker="o",
                     linestyle="-",
                     linewidth=2,
-                    label=model_name,
+                    # label="Full Embedding",
+                    label="jina-v3",
                 )
-                handles.append(model_line)
-        else:
-            # Always include full embedding
-            mean_line = mlines.Line2D(
+                handles.append(mean_line)
+
+                # Add Matryoshka dimensions if present (check first result for Matryoshka data)
+                has_matryoshka = any(
+                    "matryoshka_results" in result for result in all_results
+                )
+                if has_matryoshka and matryoshka_dimensions:
+                    colors = [
+                        "red",
+                        "green",
+                        "orange",
+                        "purple",
+                        "brown",
+                        "pink",
+                        "gray",
+                        "olive",
+                    ]
+                    for i, dim in enumerate(matryoshka_dimensions):
+                        color = colors[i % len(colors)]
+                        mat_line = mlines.Line2D(
+                            [],
+                            [],
+                            color=color,
+                            marker="o",
+                            linestyle="--" if i >= 4 else "-",
+                            linewidth=2,
+                            label=f"Matryoshka D{dim}",
+                        )
+                        handles.append(mat_line)
+
+            # Add confidence interval patch
+            ci_patch = mpatches.Patch(
+                color="blue", alpha=0.2, label="95% Confidence Interval"
+            )
+            handles.append(ci_patch)
+
+            # Determine number of columns based on number of handles
+            ncol = min(len(handles), 6)  # Maximum 6 columns to avoid overcrowding
+
+            fig.legend(
+                handles=handles,
+                loc="lower center",
+                bbox_to_anchor=(0.5, legend_y),
+                ncol=ncol,
+                fontsize=9,
+                frameon=False,
+                columnspacing=2.0,
+                handletextpad=1.2,
+            )
+        elif analysis_type == "positional_directional_leakage":
+            # Position analysis legend - check if Matryoshka dimensions are present
+            handles = []
+            labels = []
+
+            forward_line = mlines.Line2D(
                 [],
                 [],
                 color="blue",
                 marker="o",
                 linestyle="-",
                 linewidth=2,
-                label="Full Embedding",
+                label="Forward Similarity",
             )
-            handles.append(mean_line)
+            backward_line = mlines.Line2D(
+                [],
+                [],
+                color="orange",
+                marker="o",
+                linestyle="-",
+                linewidth=2,
+                label="Backward Similarity",
+            )
+            handles.append(forward_line)
+            handles.append(backward_line)
 
             # Add Matryoshka dimensions if present (check first result for Matryoshka data)
             has_matryoshka = any(
@@ -1291,160 +2043,87 @@ def analyze_and_plot_multiple_results(
                     )
                     handles.append(mat_line)
 
-        # Add confidence interval patch
-        ci_patch = mpatches.Patch(
-            color="blue", alpha=0.2, label="95% Confidence Interval"
-        )
-        handles.append(ci_patch)
+            # Determine number of columns based on number of handles
+            ncol = min(len(handles), 6)  # Maximum 6 columns to avoid overcrowding
 
-        # Determine number of columns based on number of handles
-        ncol = min(len(handles), 6)  # Maximum 6 columns to avoid overcrowding
-
-        fig.legend(
-            handles=handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, legend_y),
-            ncol=ncol,
-            fontsize=9,
-            frameon=False,
-            columnspacing=2.0,
-            handletextpad=1.2,
-        )
-    elif analysis_type == "positional_directional_leakage":
-        # Position analysis legend - check if Matryoshka dimensions are present
-        handles = []
-        labels = []
-
-        forward_line = mlines.Line2D(
-            [],
-            [],
-            color="blue",
-            marker="o",
-            linestyle="-",
-            linewidth=2,
-            label="Forward Similarity",
-        )
-        backward_line = mlines.Line2D(
-            [],
-            [],
-            color="orange",
-            marker="o",
-            linestyle="-",
-            linewidth=2,
-            label="Backward Similarity",
-        )
-        handles.append(forward_line)
-        handles.append(backward_line)
-
-        # Add Matryoshka dimensions if present (check first result for Matryoshka data)
-        has_matryoshka = any("matryoshka_results" in result for result in all_results)
-        if has_matryoshka and matryoshka_dimensions:
-            colors = [
-                "red",
-                "green",
-                "orange",
-                "purple",
-                "brown",
-                "pink",
-                "gray",
-                "olive",
-            ]
-            for i, dim in enumerate(matryoshka_dimensions):
-                color = colors[i % len(colors)]
-                mat_line = mlines.Line2D(
-                    [],
-                    [],
-                    color=color,
-                    marker="o",
-                    linestyle="--" if i >= 4 else "-",
-                    linewidth=2,
-                    label=f"Matryoshka D{dim}",
-                )
-                handles.append(mat_line)
-
-        # Add confidence interval patch
-        # ci_patch = mpatches.Patch(
-        #     color="blue", alpha=0.2, label="95% Confidence Interval"
-        # )
-        # handles.append(ci_patch)
-
-        # Determine number of columns based on number of handles
-        ncol = min(len(handles), 6)  # Maximum 6 columns to avoid overcrowding
-
-        fig.legend(
-            handles=handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, legend_y),
-            ncol=ncol,
-            fontsize=9,
-            frameon=False,
-            columnspacing=2.0,
-            handletextpad=1.2,
-        )
-    elif analysis_type == "positional_directional_leakage_heatmap":
-        # Heatmap legend with colorbar explanation
-        handles = []
-
-        # Add colorbar explanation patch
-        colorbar_patch = mpatches.Patch(
-            color="lightblue",
-            label="Colorbar: Red = High similarity, Blue = Low similarity",
-        )
-        handles.append(colorbar_patch)
-
-        # Add matrix explanation patches
-        upper_patch = mpatches.Patch(
-            color="lightcoral",
-            alpha=0.7,
-            label="Upper triangle: Forward (earlier→later)",
-        )
-        lower_patch = mpatches.Patch(
-            color="lightgreen",
-            alpha=0.7,
-            label="Lower triangle: Backward (later→earlier)",
-        )
-        handles.append(upper_patch)
-        handles.append(lower_patch)
-
-        # Add Matryoshka dimensions if present
-        has_matryoshka = any("matryoshka_results" in result for result in all_results)
-        if has_matryoshka and matryoshka_dimensions:
-            mat_patch = mpatches.Patch(
-                color="gold",
-                alpha=0.7,
-                label=f"Matryoshka dimensions: {matryoshka_dimensions}",
+            fig.legend(
+                handles=handles,
+                loc="lower center",
+                bbox_to_anchor=(0.5, legend_y),
+                ncol=ncol,
+                fontsize=9,
+                frameon=False,
+                columnspacing=2.0,
+                handletextpad=1.2,
             )
-            handles.append(mat_patch)
+        elif analysis_type == "positional_directional_leakage_heatmap":
+            # Heatmap legend with colorbar explanation
+            handles = []
 
-        # Determine number of columns based on number of handles
-        ncol = min(len(handles), 3)  # Maximum 3 columns for heatmap legends
+            # Add colorbar explanation patch
+            colorbar_patch = mpatches.Patch(
+                color="lightblue",
+                label="Colorbar: Red = High similarity, Blue = Low similarity",
+            )
+            handles.append(colorbar_patch)
 
-        fig.legend(
-            handles=handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, legend_y),
-            ncol=ncol,
-            fontsize=9,
-            frameon=False,
-            columnspacing=2.0,
-            handletextpad=1.2,
-        )
-    elif analysis_type == "directional_leakage":
-        # Directional leakage legend
-        blue_patch = mpatches.Patch(color="blue", alpha=0.6, label="Forward Similarity")
-        orange_patch = mpatches.Patch(
-            color="orange", alpha=0.6, label="Backward Similarity"
-        )
-        fig.legend(
-            handles=[blue_patch, orange_patch],
-            loc="lower center",
-            bbox_to_anchor=(0.5, legend_y),
-            ncol=2,
-            fontsize=10,
-            frameon=False,
-            columnspacing=2.5,
-            handletextpad=1.5,
-        )
+            # Add matrix explanation patches
+            upper_patch = mpatches.Patch(
+                color="lightcoral",
+                alpha=0.7,
+                label="Upper triangle: Forward (earlier→later)",
+            )
+            lower_patch = mpatches.Patch(
+                color="lightgreen",
+                alpha=0.7,
+                label="Lower triangle: Backward (later→earlier)",
+            )
+            handles.append(upper_patch)
+            handles.append(lower_patch)
+
+            # Add Matryoshka dimensions if present
+            has_matryoshka = any(
+                "matryoshka_results" in result for result in all_results
+            )
+            if has_matryoshka and matryoshka_dimensions:
+                mat_patch = mpatches.Patch(
+                    color="gold",
+                    alpha=0.7,
+                    label=f"Matryoshka dimensions: {matryoshka_dimensions}",
+                )
+                handles.append(mat_patch)
+
+            # Determine number of columns based on number of handles
+            ncol = min(len(handles), 3)  # Maximum 3 columns for heatmap legends
+
+            fig.legend(
+                handles=handles,
+                loc="lower center",
+                bbox_to_anchor=(0.5, legend_y),
+                ncol=ncol,
+                fontsize=9,
+                frameon=False,
+                columnspacing=2.0,
+                handletextpad=1.2,
+            )
+        elif analysis_type == "directional_leakage":
+            # Directional leakage legend
+            blue_patch = mpatches.Patch(
+                color="blue", alpha=0.6, label="Forward Similarity"
+            )
+            orange_patch = mpatches.Patch(
+                color="orange", alpha=0.6, label="Backward Similarity"
+            )
+            fig.legend(
+                handles=[blue_patch, orange_patch],
+                loc="lower center",
+                bbox_to_anchor=(0.5, legend_y),
+                ncol=2,
+                fontsize=10,
+                frameon=False,
+                columnspacing=2.5,
+                handletextpad=1.5,
+            )
 
     # Create pooling strategy legend text (only if show_segment_lengths is True)
     if show_segment_lengths:
@@ -1584,7 +2263,7 @@ class MultiModelPositionSimilaritySinglePlotter:
             # Use source_lang and target_lang from the experiment info for proper language identification
             source_lang = exp_info.get("source_lang", "unknown")
             target_lang = exp_info.get("target_lang", None)
-            
+
             # Create language key that distinguishes between monolingual and multilingual experiments
             if target_lang is None:
                 lang_key = source_lang  # Monolingual: e.g., "de"
@@ -1628,13 +2307,13 @@ class MultiModelPositionSimilaritySinglePlotter:
         concat_size = base_result["concat_size"]
         source_lang = base_result.get("source_lang", "unknown")
         target_lang = base_result.get("target_lang", None)
-        
+
         # Create language key that matches the grouping logic
         if target_lang is None:
             lang_key = source_lang  # Monolingual: e.g., "de"
         else:
             lang_key = f"{source_lang}_{target_lang}"  # Multilingual: e.g., "de_en"
-            
+
         config_key = (concat_size, lang_key)
 
         # Define colors for different models
@@ -1796,13 +2475,13 @@ class MultiModelPositionSimilaritySinglePlotter:
         concat_size = base_result["concat_size"]
         source_lang = base_result.get("source_lang", "unknown")
         target_lang = base_result.get("target_lang", None)
-        
+
         # Create language key that matches the grouping logic
         if target_lang is None:
             lang_key = source_lang  # Monolingual: e.g., "de"
         else:
             lang_key = f"{source_lang}_{target_lang}"  # Multilingual: e.g., "de_en"
-            
+
         config_key = (concat_size, lang_key)
 
         # Define colors for different models

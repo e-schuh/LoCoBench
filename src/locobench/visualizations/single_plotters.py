@@ -69,7 +69,7 @@ class PositionSimilaritySinglePlotter:
             positions,
             position_means,
             "o-",
-            color="blue",
+            color="red",
             linewidth=2,
             label="Full",
         )
@@ -85,7 +85,7 @@ class PositionSimilaritySinglePlotter:
                 (pos - bar_width / 2, ci_lower),  # (x, y) of bottom left corner
                 bar_width,  # width
                 ci_upper - ci_lower,  # height
-                color="blue",
+                color="red",
                 alpha=0.2,
             )
             ax.add_patch(rect)
@@ -225,70 +225,6 @@ class PositionSimilaritySinglePlotter:
         ax.grid(True, linestyle="--", alpha=0.7)
 
         # Note: Individual subplot legends are not shown - main legend is at the bottom of the figure
-
-    def compute_position_t_tests(
-        self,
-        position_similarities: List[List[float]],
-    ) -> Dict[str, Any]:
-        """
-        Compute pairwise t-tests between position similarities.
-
-        Args:
-            position_similarities: List of lists containing similarity scores for each position
-
-        Returns:
-            Dictionary containing t-test results:
-            - t_stats: Dictionary mapping comparison key to t-statistic
-            - p_values: Dictionary mapping comparison key to p-value
-            - significant: Dictionary mapping comparison key to significance boolean
-            - t_test_df: Pandas DataFrame with all test results formatted for display
-        """
-        from scipy import stats
-        import pandas as pd
-
-        num_positions = len(position_similarities)
-
-        # Initialize dictionaries to store t-test results
-        t_stats = {}
-        p_values = {}
-        significant = {}
-
-        # Perform pairwise t-tests (pos_i > pos_j)
-        for i in range(num_positions):
-            for j in range(i + 1, num_positions):
-                # Only perform test if both positions have samples
-                if position_similarities[i] and position_similarities[j]:
-                    # Perform one-tailed t-test (is position i > position j?)
-                    t_stat, p_val = stats.ttest_ind(
-                        position_similarities[i],
-                        position_similarities[j],
-                        alternative="greater",
-                    )
-
-                    key = f"pos{i+1}>pos{j+1}"
-                    t_stats[key] = t_stat
-                    p_values[key] = p_val
-                    significant[key] = p_val < 0.05
-
-        # Create DataFrame for easier reading
-        t_test_df = pd.DataFrame(
-            {
-                "Comparison": list(t_stats.keys()),
-                "t-statistic": list(t_stats.values()),
-                "p-value": list(p_values.values()),
-                "Significant (p<0.05)": list(significant.values()),
-            }
-        )
-
-        # Create return dictionary with all results
-        t_test_results = {
-            "t_stats": t_stats,
-            "p_values": p_values,
-            "significant": significant,
-            "t_test_df": t_test_df,
-        }
-
-        return t_test_results
 
 
 class DirectionalLeakageSinglePlotter:
