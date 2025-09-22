@@ -44,6 +44,7 @@ class BaseEmbedder:
         calib_layers: Optional[str] = None,
         calib_source_tokens: Optional[str] = None,
         calib_basket_size: Optional[int] = None,
+        device_map: Optional[Union[str, Dict[str, Union[int, str]]]] = None,
     ):
         """
         Initialize the BaseEmbedder with a HuggingFace model.
@@ -59,6 +60,8 @@ class BaseEmbedder:
             self.device = DEVICE
         else:
             self.device = device
+        # Optional device_map for HF accelerate-style sharding across multiple GPUs
+        self.device_map: Optional[Union[str, Dict[str, Union[int, str]]]] = device_map
 
         # Check if xformers is available for memory-efficient attention
         spec = importlib.util.find_spec("xformers")
@@ -73,12 +76,22 @@ class BaseEmbedder:
                 model_name in ATTN_CALIB_SUPPORTED_MODELS
             ), f"Attention calibration is only supported for the following models: {ATTN_CALIB_SUPPORTED_MODELS}"
             print("Loading model using eager attn to support calibration")
-            hf_model = AutoModel.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                attn_implementation="eager",
-                torch_dtype=torch.float16,
-            ).to(self.device)
+            # If device_map is provided, let HF shard the model across GPUs and do NOT move to a single device.
+            if self.device_map is not None:
+                hf_model = AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                    attn_implementation="eager",
+                    torch_dtype=torch.float16,
+                    device_map=self.device_map,
+                )
+            else:
+                hf_model = AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                    attn_implementation="eager",
+                    torch_dtype=torch.float16,
+                ).to(self.device)
             self.model = nnsight.NNsight(hf_model)
 
             self.num_layers = int(self.model.config.num_hidden_layers)
@@ -119,25 +132,49 @@ class BaseEmbedder:
 
         elif model_name == "Alibaba-NLP/gte-multilingual-base" and xformers_available:
             print("Loading Alibaba-NLP/gte-multilingual-base with xformers support")
-            self.model = AutoModel.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                unpad_inputs=True,
-                use_memory_efficient_attention=True,
-                torch_dtype=torch.float16,
-            ).to(self.device)
+            if self.device_map is not None:
+                self.model = AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                    unpad_inputs=True,
+                    use_memory_efficient_attention=True,
+                    torch_dtype=torch.float16,
+                    device_map=self.device_map,
+                )
+            else:
+                self.model = AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                    unpad_inputs=True,
+                    use_memory_efficient_attention=True,
+                    torch_dtype=torch.float16,
+                ).to(self.device)
         elif model_name == "Qwen/Qwen3-Embedding-0.6B" and xformers_available:
-            self.model = AutoModel.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                attn_implementation="flash_attention_2",
-                torch_dtype=torch.float16,
-                device_map=self.device,
-            ).to(self.device)
+            if self.device_map is not None:
+                self.model = AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                    attn_implementation="flash_attention_2",
+                    torch_dtype=torch.float16,
+                    device_map=self.device_map,
+                )
+            else:
+                self.model = AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                    attn_implementation="flash_attention_2",
+                    torch_dtype=torch.float16,
+                    device_map=self.device,
+                ).to(self.device)
         else:
-            self.model = AutoModel.from_pretrained(
-                model_name, trust_remote_code=True
-            ).to(self.device)
+            if self.device_map is not None:
+                self.model = AutoModel.from_pretrained(
+                    model_name, trust_remote_code=True, device_map=self.device_map
+                )
+            else:
+                self.model = AutoModel.from_pretrained(
+                    model_name, trust_remote_code=True
+                ).to(self.device)
 
         self.model.eval()
         self.normalize = normalize
@@ -311,9 +348,11 @@ class BaseEmbedder:
         Returns:
             Model outputs
         """
-        # Move tensors to the correct device
-        input_ids = input_ids.to(self.device)
-        attention_mask = attention_mask.to(self.device)
+        # Move tensors to the correct device unless we're using a multi-GPU device_map.
+        # With device_map, let HF accelerate handle dispatch; during calibration we move per-layer tensors as needed.
+        if self.device_map is None:
+            input_ids = input_ids.to(self.device)
+            attention_mask = attention_mask.to(self.device)
 
         # Apply attention calibration if enabled
         if self.apply_attn_calibration:
@@ -429,6 +468,7 @@ class StandaloneEmbedder(BaseEmbedder):
         calib_layers: Optional[str] = None,
         calib_source_tokens: Optional[str] = None,
         calib_basket_size: Optional[int] = None,
+        device_map: Optional[Union[str, Dict[str, Union[int, str]]]] = None,
     ):
         """
         Initialize the StandaloneEmbedder with a HuggingFace model.
@@ -449,6 +489,7 @@ class StandaloneEmbedder(BaseEmbedder):
             calib_layers=calib_layers,
             calib_source_tokens=calib_source_tokens,
             calib_basket_size=calib_basket_size,
+            device_map=device_map,
         )
 
     def embed_batch(
@@ -551,6 +592,7 @@ class LateChunkingEmbedder(BaseEmbedder):
         calib_layers: Optional[str] = None,
         calib_source_tokens: Optional[str] = None,
         calib_basket_size: Optional[int] = None,
+        device_map: Optional[Union[str, Dict[str, Union[int, str]]]] = None,
     ):
         """
         Initialize the LateChunkingEmbedder with a HuggingFace model.
@@ -571,6 +613,7 @@ class LateChunkingEmbedder(BaseEmbedder):
             calib_layers=calib_layers,
             calib_source_tokens=calib_source_tokens,
             calib_basket_size=calib_basket_size,
+            device_map=device_map,
         )
 
     def embed_batch(

@@ -210,6 +210,10 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
         ),
     )
     print(f"Using device: {device}")
+    # Optional: allow HF accelerate-style device_map for multi-GPU sharding
+    device_map = config.get("device_map", None)
+    if device_map is not None:
+        print(f"Using device_map for model sharding: {device_map}")
 
     # Load tokenized dataset
     print(f"Loading tokenized dataset from {tokenized_dataset_path}...")
@@ -354,6 +358,7 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
         calib_layers=sa_layers,
         calib_source_tokens=sa_source,
         calib_basket_size=sa_basket,
+        device_map=device_map,
     )
 
     latechunk_embedder = LateChunkingEmbedder(
@@ -363,6 +368,7 @@ def compute_embeddings(config: Dict[str, Any]) -> Dict[str, Any]:
         calib_layers=lc_layers,
         calib_source_tokens=lc_source,
         calib_basket_size=lc_basket,
+        device_map=device_map,
     )
 
     # Compute standalone embeddings
