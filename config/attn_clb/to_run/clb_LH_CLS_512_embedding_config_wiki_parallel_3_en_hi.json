@@ -13,5 +13,6 @@
     "apply_attn_calibration": true,
     "calib_layers": "last_half",
     "calib_source_tokens": "cls",
-    "calib_basket_size": 128
+    "calib_basket_size": 512,
+    "device_map": "auto"
 }
