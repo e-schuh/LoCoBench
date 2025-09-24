@@ -377,6 +377,8 @@ class BaseEmbedder:
                 )
         # For other models, use the standard forward pass
         else:
+            input_ids = input_ids.to(self.model.device)
+            attention_mask = attention_mask.to(self.model.device)
             with torch.no_grad():
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
