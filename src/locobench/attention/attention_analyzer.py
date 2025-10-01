@@ -157,12 +157,15 @@ class AttentionAggregator:
         self.num_rel_bins: Optional[int] = None
         self.num_articles: Optional[int] = None
         self.seq_len_ref: Optional[int] = None
+        self.max_total_bins: Optional[int] = None
 
         # Absolute baskets accumulators [layers, bins]
         self.sum_abs: Optional[torch.Tensor] = None
+        self.sum_abs_mass: Optional[torch.Tensor] = None
         self.count_abs: Optional[torch.Tensor] = None
         # Relative baskets accumulators [layers, bins]
         self.sum_rel: Optional[torch.Tensor] = None
+        self.sum_rel_mass: Optional[torch.Tensor] = None
         self.count_rel: Optional[torch.Tensor] = None
 
         # Special token accumulators [layers]
@@ -170,6 +173,10 @@ class AttentionAggregator:
         self.count_first: Optional[torch.Tensor] = None
         self.sum_last: Optional[torch.Tensor] = None
         self.count_last: Optional[torch.Tensor] = None
+
+        # Layer-wise bin attention matrices [layers, bins, bins]
+        self.layer_bin_mass_sum: Optional[torch.Tensor] = None
+        self.layer_bin_count: Optional[torch.Tensor] = None
 
         # Basket-aggregated attention map accumulators (averaged over heads and layers)
         # Absolute (dynamic number of bins): [B_max, B_max]
@@ -215,7 +222,8 @@ class AttentionAggregator:
         for i in range(bsz):
             mask_i = attention_mask[i]  # [L]
             valid_idx = mask_i.nonzero(as_tuple=False).squeeze(-1)
-            assert valid_idx.numel() > 0
+            assert valid_idx.dim() == 1
+            assert valid_idx.numel() >= 2
 
             # Build effective index list consistent with exclusions for map computation
             eff_idx = valid_idx
@@ -228,6 +236,32 @@ class AttentionAggregator:
             if L_eff == 0:
                 self.examples_seen += 1
                 continue
+
+            # Build bin definitions including first and last tokens explicitly
+            row_bins_indices: List[torch.Tensor] = []
+            first_idx = valid_idx[0:1]
+            last_idx = valid_idx[-1:].clone()
+            row_bins_indices.append(first_idx)
+
+            middle_idx = valid_idx[1:-1]
+            middle_count = middle_idx.numel()
+            if middle_count > 0:
+                num_middle_bins = (
+                    middle_count + self.basket_size - 1
+                ) // self.basket_size
+                for b in range(num_middle_bins):
+                    s_mid = b * self.basket_size
+                    e_mid = min((b + 1) * self.basket_size, middle_count)
+                    seg_idx = middle_idx[s_mid:e_mid]
+                    assert seg_idx.numel() > 0
+                    row_bins_indices.append(seg_idx)
+
+            row_bins_indices.append(last_idx)
+            total_bins = len(row_bins_indices)
+            if self.max_total_bins is None or total_bins > self.max_total_bins:
+                self.max_total_bins = total_bins
+            assert self.max_total_bins is not None
+            self._ensure_layer_bin_buffers(self.max_total_bins)
 
             # Build per-layer vector per valid target position
             # Default: incoming[j] = sum over queries of A[query->key=j]
@@ -278,7 +312,7 @@ class AttentionAggregator:
                 if self.compute_incoming:
                     assert per_layer_vecs is not None
                     self._accumulate_baskets_absolute(per_layer_vecs)
-                    self._accumulate_baskets_relative(per_layer_vecs)
+                    # self._accumulate_baskets_relative(per_layer_vecs)
                 # Optionally compute attention maps
                 if self.compute_maps:
                     # Precompute bin ranges once per example
@@ -379,17 +413,49 @@ class AttentionAggregator:
                 assert per_layer_vecs is not None
                 self._accumulate_articles(per_layer_vecs, spans)
 
+            # Aggregate per-layer attention matrices over bin pairs
+            assert self.layer_bin_mass_sum is not None
+            assert self.layer_bin_count is not None
+            for l in range(num_layers):
+                layer_attn = attentions[l][i]
+                assert layer_attn.shape == (num_heads, seq_len, seq_len)
+                avg_attn = layer_attn.mean(dim=0)
+                assert avg_attn.shape == (seq_len, seq_len)
+                for row_idx, rows in enumerate(row_bins_indices):
+                    assert rows.dim() == 1 and rows.numel() > 0
+                    row_slice = torch.index_select(avg_attn, 0, rows)
+                    row_token_count = int(rows.numel())
+                    assert row_token_count > 0
+                    for col_idx, cols in enumerate(row_bins_indices):
+                        assert cols.dim() == 1 and cols.numel() > 0
+                        block = torch.index_select(row_slice, 1, cols)
+                        block_mass = float(block.sum().item()) / float(row_token_count)
+                        self.layer_bin_mass_sum[l, row_idx, col_idx] += block_mass
+                        self.layer_bin_count[l, row_idx, col_idx] += 1.0
+
             self.examples_seen += 1
 
     def _ensure_abs_buffers(self, L_bins: int) -> None:
         assert self.num_layers is not None
         if self.sum_abs is None:
             self.sum_abs = torch.zeros(self.num_layers, L_bins, dtype=torch.float32)
+            self.sum_abs_mass = torch.zeros(
+                self.num_layers, L_bins, dtype=torch.float32
+            )
             self.count_abs = torch.zeros(self.num_layers, L_bins, dtype=torch.float32)
         elif self.sum_abs.shape[1] < L_bins:
             pad = L_bins - self.sum_abs.shape[1]
+            assert self.sum_abs_mass is not None
+            assert self.count_abs is not None
             self.sum_abs = torch.cat(
                 [self.sum_abs, torch.zeros(self.num_layers, pad, dtype=torch.float32)],
+                dim=1,
+            )
+            self.sum_abs_mass = torch.cat(
+                [
+                    self.sum_abs_mass,
+                    torch.zeros(self.num_layers, pad, dtype=torch.float32),
+                ],
                 dim=1,
             )
             self.count_abs = torch.cat(
@@ -404,10 +470,42 @@ class AttentionAggregator:
         assert self.num_layers is not None
         if self.sum_rel is None:
             self.sum_rel = torch.zeros(self.num_layers, L_bins, dtype=torch.float32)
+            self.sum_rel_mass = torch.zeros(
+                self.num_layers, L_bins, dtype=torch.float32
+            )
             self.count_rel = torch.zeros(self.num_layers, L_bins, dtype=torch.float32)
         else:
             assert self.sum_rel.shape == (self.num_layers, L_bins)
             assert self.count_rel.shape == (self.num_layers, L_bins)
+            assert self.sum_rel_mass is not None
+            assert self.sum_rel_mass.shape == (self.num_layers, L_bins)
+
+    def _ensure_layer_bin_buffers(self, bins: int) -> None:
+        assert self.num_layers is not None
+        if self.layer_bin_mass_sum is None:
+            self.layer_bin_mass_sum = torch.zeros(
+                self.num_layers, bins, bins, dtype=torch.float32
+            )
+            self.layer_bin_count = torch.zeros(
+                self.num_layers, bins, bins, dtype=torch.float32
+            )
+            return
+
+        assert self.layer_bin_count is not None
+        current_bins = self.layer_bin_mass_sum.shape[1]
+        if current_bins < bins:
+            new_sum = torch.zeros(self.num_layers, bins, bins, dtype=torch.float32)
+            new_sum[:, :current_bins, :current_bins] = self.layer_bin_mass_sum
+            self.layer_bin_mass_sum = new_sum
+
+            new_count = torch.zeros(self.num_layers, bins, bins, dtype=torch.float32)
+            new_count[:, :current_bins, :current_bins] = self.layer_bin_count
+            self.layer_bin_count = new_count
+        else:
+            assert self.layer_bin_mass_sum.shape[0] == self.num_layers
+            assert self.layer_bin_mass_sum.shape[1] >= bins
+            assert self.layer_bin_mass_sum.shape[2] >= bins
+            assert self.layer_bin_count.shape == self.layer_bin_mass_sum.shape
 
     def _ensure_map_abs_buffers(self, bins: int) -> None:
         if self.map_abs_sum is None:
@@ -461,6 +559,9 @@ class AttentionAggregator:
                 if e <= s:
                     continue
                 seg = v[s:e]
+                mass = float(seg.sum())
+                assert self.sum_abs_mass is not None
+                self.sum_abs_mass[l, b] += mass
                 self.sum_abs[l, b] += float(seg.mean())
                 self.count_abs[l, b] += 1.0
 
@@ -491,6 +592,9 @@ class AttentionAggregator:
                 if e <= s:
                     continue
                 seg = v[s:e]
+                mass = float(seg.sum())
+                assert self.sum_rel_mass is not None
+                self.sum_rel_mass[l, b] += mass
                 self.sum_rel[l, b] += float(seg.mean())
                 self.count_rel[l, b] += 1.0
 
@@ -511,6 +615,9 @@ class AttentionAggregator:
                 if not (0 <= s < e <= v.shape[0]):
                     continue
                 seg = v[s:e]
+                mass = float(seg.sum())
+                assert self.sum_abs_mass is not None
+                self.sum_abs_mass[l, a_idx] += mass
                 self.sum_abs[l, a_idx] += float(seg.mean())
                 self.count_abs[l, a_idx] += 1.0
 
@@ -702,10 +809,14 @@ class AttentionAggregator:
                 and self.sum_abs is not None
                 and self.count_abs is not None
             ):
-                means_abs = (self.sum_abs / self.count_abs.clamp_min(1.0)).tolist()
+                assert self.sum_abs_mass is not None
+                denom_abs = self.count_abs.clamp_min(1.0)
+                means_abs = (self.sum_abs / denom_abs).tolist()
+                mass_means_abs = (self.sum_abs_mass / denom_abs).tolist()
                 articles_section = {
                     "num_articles": self.sum_abs.shape[1],
                     "per_layer_article_means": means_abs,
+                    "per_layer_article_mass_means": mass_means_abs,
                     "counts": self.count_abs.tolist(),
                 }
             result.update({"articles": articles_section})
@@ -718,24 +829,28 @@ class AttentionAggregator:
                 and self.sum_abs is not None
                 and self.count_abs is not None
             ):
-                means_abs = (self.sum_abs / self.count_abs.clamp_min(1.0)).tolist()
+                assert self.sum_abs_mass is not None
+                denom_abs = self.count_abs.clamp_min(1.0)
+                means_abs = (self.sum_abs / denom_abs).tolist()
+                mass_means_abs = (self.sum_abs_mass / denom_abs).tolist()
                 baskets_absolute = {
                     "basket_size": self.basket_size,
                     "num_bins": self.sum_abs.shape[1],
                     "per_layer_bin_means": means_abs,
+                    "per_layer_bin_mass_means": mass_means_abs,
                     "counts": self.count_abs.tolist(),
                 }
-            if (
-                self.compute_incoming
-                and self.sum_rel is not None
-                and self.count_rel is not None
-            ):
-                means_rel = (self.sum_rel / self.count_rel.clamp_min(1.0)).tolist()
-                baskets_relative = {
-                    "num_bins": self.sum_rel.shape[1],
-                    "per_layer_bin_means": means_rel,
-                    "counts": self.count_rel.tolist(),
-                }
+            # if (
+            #     self.compute_incoming
+            #     and self.sum_rel is not None
+            #     and self.count_rel is not None
+            # ):
+            #     means_rel = (self.sum_rel / self.count_rel.clamp_min(1.0)).tolist()
+            #     baskets_relative = {
+            #         "num_bins": self.sum_rel.shape[1],
+            #         "per_layer_bin_means": means_rel,
+            #         "counts": self.count_rel.tolist(),
+            #     }
 
             # Compute attention maps means when present
             maps_abs = None
@@ -761,6 +876,26 @@ class AttentionAggregator:
                 ).tolist()
                 maps_rel_counts = self.map_rel_count.tolist()
 
+            layer_matrix = None
+            if self.layer_bin_mass_sum is not None and self.layer_bin_count is not None:
+                denom_layer = self.layer_bin_count.clamp_min(1.0)
+                mass_means_layer = (self.layer_bin_mass_sum / denom_layer).tolist()
+                num_bins_layer = self.layer_bin_mass_sum.shape[1]
+                assert num_bins_layer >= 2
+                middle_bins = max(0, num_bins_layer - 2)
+                bin_labels = (
+                    ["first_token"]
+                    + [f"basket_{i}" for i in range(middle_bins)]
+                    + ["last_token"]
+                )
+                layer_matrix = {
+                    "basket_size": self.basket_size,
+                    "num_bins": num_bins_layer,
+                    "per_layer_bin_pair_mass_means": mass_means_layer,
+                    "counts": self.layer_bin_count.tolist(),
+                    "bin_labels": bin_labels,
+                }
+
             result.update(
                 {
                     "baskets_absolute": baskets_absolute,
@@ -784,6 +919,7 @@ class AttentionAggregator:
                         if maps_rel is not None
                         else None
                     ),
+                    "layer_attention_matrix": layer_matrix,
                 }
             )
         return result
