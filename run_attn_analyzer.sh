@@ -115,7 +115,7 @@ run_analyzer_guarded() {
 	fi
 }
 
-for i in 1 2 3 4; do
+for i in 1 2 3; do
 	CONFIG_PATH="${CONFIG_DIR}/embedding_config_wiki_parallel_${i}_${LANG_SUFFIX}.json"
 
 	for BASKET in "${BASKET_SIZES_ARR[@]}"; do
