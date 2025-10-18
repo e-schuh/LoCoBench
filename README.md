@@ -1,3 +1,5 @@
+# *WIP: This repo is currently restructured until the end of Oct.*
+
 # Workbench and Benchmarking Framework for Long Context Text Embedding Models
 
 ## Reproducing Environments
