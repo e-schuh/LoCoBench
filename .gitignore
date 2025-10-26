@@ -177,10 +177,11 @@ cython_debug/
 results/
 data/
 notebooks/
-config/Alibaba_mGTE/
+#config/Alibaba_mGTE/
 config/JinaAi_jina-v3/
 config/Qwen_Qwen3-Emb
 config/cohere/
-config/wiki_parallel
+#config/wiki_parallel
+config/_LOCAL
 .DS_Store
 .github/*
