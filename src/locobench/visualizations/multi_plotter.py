@@ -12,12 +12,25 @@ import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 import numpy as np
 from matplotlib.gridspec import GridSpec
-from matplotlib.ticker import FormatStrFormatter
+from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 from collections import defaultdict
 from pathlib import Path
 
+from .plot_constants import (
+    SUBPLOT_COLUMN_SPACING,
+    SUBPLOT_VERTICAL_SCALE,
+    SUBPLOT_FONT_SCALE,
+    BASE_AXIS_LABEL_FONT_SIZE,
+    BASE_TICK_LABEL_FONT_SIZE,
+    BASE_SUBPLOT_TITLE_FONT_SIZE,
+    LEGEND_LINEWIDTH,
+    POS_LABEL_PAD,
+    PLOT_LINEWIDTH,
+    PLOT_MARKERSIZE,
+)
+
 # Import the required analyses functions
-from ..core.segment_embedding_analysis import (
+from ..analysis.segment_embedding_analysis import (
     DocumentSegmentSimilarityAnalyzer,
     DirectionalLeakageAnalyzer,
     PositionalDirectionalLeakageAnalyzer,
@@ -244,7 +257,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             )
 
         # Split the inputs and ensure identical formatting across all figures
-        from ..core.segment_embedding_analysis import load_exp_info
+        from ..analysis.segment_embedding_analysis import load_exp_info
 
         # Build grouping map based on requested split dimension
         groups: Dict[str, List[str | Path]] = defaultdict(list)
@@ -382,7 +395,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             pooling_strategy_document=pooling_strategy,
             analysis_type=self.analysis_type,
             document_embedding_type=self.document_embedding_type,
-            title="Similarity between Document-Level Embedding and Standalone Segment Embeddings",
+            title="Similarity between Document-Level Embd. and Standalone Segment Embds. (Calibrated mGTE)",
             show_segment_lengths=show_segment_lengths,
             show_lengths=show_lengths,
             figure_width=figure_width,
@@ -425,7 +438,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         Reuses the grid/axis layout from analyze_and_plot_multiple_results by providing a custom
         single-plotter and suppressing the default legend so we can inject a calibration legend.
         """
-        from ..core.segment_embedding_analysis import load_exp_info
+        from ..analysis.segment_embedding_analysis import load_exp_info
 
         # --- Group paths by (concat_size, lang_key) and extract calibration labels ---
         def lang_key_from_exp(exp: Dict[str, Any]) -> str:
@@ -455,10 +468,21 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
                 assert (
                     sa_tuple == lc_tuple
                 ), "Calibration parameters for standalone and latechunk must match when both are applied."
-                return f"{sa_tuple[0]}--{sa_tuple[1]}--{sa_tuple[2]}"
+                # label_string = (
+                #     f"{sa_tuple[2]}\u2014{sa_tuple[1].upper()}\u2014{sa_tuple[0]}"
+                # )
+                label_string = f"{sa_tuple[2]}\u2014{sa_tuple[1].replace('cls', '<s>')}\u2014{sa_tuple[0]}"
+                return label_string
 
             if (not sa_apply) and lc_apply:
-                return f"lc-{lc.get('calib_layers')}--lc-{lc.get('calib_source_tokens')}--lc-{lc.get('calib_basket_size')}"
+                lc_tuple = (
+                    str(lc.get("calib_layers")),
+                    str(lc.get("calib_source_tokens")),
+                    str(lc.get("calib_basket_size")),
+                )
+                # label_string = f"Doc_only_clb\u2014{lc_tuple[2]}\u2014{lc_tuple[1].upper()}\u2014{lc_tuple[0]}"
+                label_string = f"Doc_only_clb\u2014{lc_tuple[2]}\u2014{lc_tuple[1].replace('cls', '<s>')}\u2014{lc_tuple[0]}"
+                return label_string
 
             # If only standalone applies (rare), fail fast as undefined in spec
             assert not (
@@ -483,7 +507,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
             if "calibration_effective" in cfg:
                 label = build_calibration_label(cfg["calibration_effective"])
             else:
-                label = "no attention calibration"
+                label = "Original mGTE (no attention calibration)"
             config_groups[key].append((p, label))
             all_labels.append(label)
             config_to_model[key] = exp["model_name"]
@@ -491,19 +515,17 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         # Unique labels and color mapping (consistent across figure)
         unique_labels = list(dict.fromkeys(all_labels))
         base_colors = [
-            "#ff7f0e",
-            "#7303b9",
-            "#8c564b",
-            "#e956b1",
-            "#7f7f7f",
-            "#bcbd22",
+            "#777DA7",
+            "#49BEAA",
+            "#EF767A",
+            "#EEB868",
         ]
         label_colors: Dict[str, str] = {}
         for i, lab in enumerate(unique_labels):
             label_colors[lab] = base_colors[i % len(base_colors)]
         # Force a consistent color for the baseline (no calibration)
-        if "no attention calibration" in label_colors:
-            label_colors["no attention calibration"] = "blue"
+        if "Original mGTE (no attention calibration)" in label_colors:
+            label_colors["Original mGTE (no attention calibration)"] = "blue"
 
         # Pre-compute results for all (config, path)
         doc_seg_analyzer = DocumentSegmentSimilarityAnalyzer()
@@ -584,12 +606,15 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
                         res = self._all_results.get((cfg_key, str(path)))
                         assert res is not None, "Missing precomputed result"
                         color = self._label_colors.get(lab, "black")
+                        linestyle = "--" if lab.startswith("Doc_only_clb") else "-"
                         ax.plot(
                             positions,
                             res["position_means"],
-                            "o-",
+                            marker="o",
+                            linestyle=linestyle,
                             color=color,
-                            linewidth=2,
+                            linewidth=PLOT_LINEWIDTH,
+                            markersize=PLOT_MARKERSIZE,
                             label=lab,
                         )
                         for pos, ci_lo, ci_hi in zip(
@@ -609,6 +634,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
                 # Draw token lengths from base_result if requested
                 show_lengths_local = kwargs.get("show_lengths", False)
                 show_token_ylabel = kwargs.get("show_token_ylabel", True)
+                show_token_ticklabels = kwargs.get("show_token_ticklabels", True)
                 if show_lengths_local and "token_lengths" in base_result:
                     ax2 = ax.twinx()
                     token_means = base_result["token_lengths"]["position_means"]
@@ -623,36 +649,74 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
                     if self._token_ylim is not None:
                         ax2.set_ylim(self._token_ylim)
                     if show_token_ylabel:
-                        ax2.set_ylabel("Token Length", color="gray")
-                    ax2.tick_params(axis="y", labelcolor="gray")
+                        ax2.set_ylabel(
+                            "Token Length",
+                            color="gray",
+                            fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                        )
+                    ax2.tick_params(
+                        axis="y",
+                        labelcolor="gray",
+                        labelright=show_token_ticklabels,
+                        labelleft=False,
+                        labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                    )
+                    if not show_token_ticklabels:
+                        ax2.set_ylabel("")
                     ax2.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
+                    ax.set_zorder(ax2.get_zorder() + 1)
+                    ax.patch.set_visible(False)
 
                 # Axis labels and title
-                ax.set_xlabel("Position")
-                ax.set_ylabel("Cosine Similarity")
+                ax.set_xlabel(
+                    "Position",
+                    fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                    labelpad=15,
+                )
+                ax.set_ylabel(
+                    "Cosine Similarity",
+                    fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                )
 
                 if kwargs.get("show_title", True):
                     if tgt and src:
-                        title_text = f"Languages: [{tgt}, {src}, ..., {src}]"
+                        title_text = f"Lang.: [{tgt}, {src}, ..., {src}]"
                     elif src:
-                        title_text = f"Languages: [{src}, ..., {src}]"
+                        title_text = f"Lang.: [{src}, ..., {src}]"
                     else:
                         title_text = f"Concat Size: {concat_size}"
                     range_id = base_result.get("range_id", "N/A")
                     if kwargs.get("show_segment_lengths", False) and range_id != "N/A":
                         title_text += f"; SL:: {range_id}"
-                    ax.set_title(title_text, fontsize=11)
+                    ax.set_title(
+                        title_text,
+                        fontsize=BASE_SUBPLOT_TITLE_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                    )
 
                 ax.set_xticks(positions)
+                ax.tick_params(
+                    axis="x",
+                    labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                    pad=POS_LABEL_PAD,
+                )
                 if self._ylim is not None:
                     ax.set_ylim(self._ylim)
+                ax.yaxis.set_major_locator(MultipleLocator(0.2))
+                ax.yaxis.set_minor_locator(MultipleLocator(0.1))
+                if self._ylim is not None:
                     y_range = self._ylim[1] - self._ylim[0]
                     ax.yaxis.set_major_formatter(
                         FormatStrFormatter("%.2f" if y_range < 0.3 else "%.1f")
                     )
                 else:
                     ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
-                ax.grid(True, linestyle="--", alpha=0.7)
+                ax.tick_params(
+                    axis="y",
+                    labelleft=kwargs.get("show_cosine_ticklabels", True),
+                    labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                )
+                ax.grid(True, which="major", linestyle="--", alpha=0.7)
+                ax.grid(True, which="minor", linestyle="--", alpha=0.7)
 
         def render_one_figure(
             group_paths: List[str | Path], per_save_path: Optional[str]
@@ -711,41 +775,68 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
                 show_plot=False,
                 return_full_results=False,
                 single_model_mode=(
-                    True if single_model_mode is None else single_model_mode
+                    True
+                    # True if single_model_mode is None else single_model_mode
                 ),
                 suppress_default_legend=True,
+                grid_hspace_override=0.4,  # hspace calibration plot
             )
 
             # Inject calibration legend at the bottom
             fig = plt.gcf()
+
+            # Hacky adjustment: match multi-model aspect ratio by stretching the figure height
+            target_rows_for_ratio = 4
+            current_rows = len(size_order)
+            if current_rows > 0 and target_rows_for_ratio > 0:
+                height_scale = target_rows_for_ratio / current_rows
+                fig.set_size_inches(
+                    fig.get_figwidth(),
+                    fig.get_figheight() * height_scale,
+                )
             handles = []
             for lab in unique_labels:
+                linestyle = "--" if lab.startswith("Doc_only_clb") else "-"
                 h = mlines.Line2D(
                     [],
                     [],
                     color=label_colors[lab],
                     marker="o",
-                    linestyle="-",
-                    linewidth=2,
+                    # markersize=PLOT_MARKERSIZE,
+                    linestyle=linestyle,
+                    linewidth=LEGEND_LINEWIDTH,
                     label=lab,
                 )
                 handles.append(h)
+            ci_color = label_colors.get(
+                "Original mGTE (no attention calibration)",
+                "blue",
+            )
             ci_patch = mpatches.Patch(
-                color="blue", alpha=0.2, label="95% Confidence Interval"
+                color=ci_color, alpha=0.2, label="95% Confidence Interval"
             )
             handles.append(ci_patch)
-            ncol = min(len(handles), 6)
-            # Add extra bottom margin to create more space between last row of subplots and the legend
-            plt.subplots_adjust(bottom=0.14)
+            assert handles, "Legend handles must not be empty."
+            ncol = max(1, (len(handles) + 1) // 2)
+            # Align subplot spacing with multi-model plots while reserving space for the legend
+            fig.subplots_adjust(
+                left=0.02,
+                right=0.98,
+                top=0.88,
+                bottom=0.17,
+                wspace=SUBPLOT_COLUMN_SPACING,
+                hspace=0.32,
+            )
             fig.legend(
                 handles=handles,
                 loc="lower center",
-                bbox_to_anchor=(0.5, 0.02),
+                bbox_to_anchor=(0.5, 0.04),
                 ncol=ncol,
-                fontsize=9,
+                fontsize=27,
                 frameon=False,
                 columnspacing=2.0,
                 handletextpad=1.2,
+                markerscale=2.5,
             )
 
             if save_plot:
@@ -825,7 +916,7 @@ class DocumentLevel2SegmentStandaloneSimPlotter:
         doc_seg_analyzer = DocumentSegmentSimilarityAnalyzer()
 
         # Get unique experiment configs (excluding model)
-        from ..core.segment_embedding_analysis import load_exp_info
+        from ..analysis.segment_embedding_analysis import load_exp_info
 
         config_groups = defaultdict(list)
         for path in paths:
@@ -1013,7 +1104,7 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
                 paths=paths,
                 analysis_type=self.analysis_type,
                 document_embedding_type=self.document_embedding_type,
-                title="Similarity between Contextualized Segment Embeddings and Standalone Segment Embeddings",
+                title="Similarity between Contextualized and Standalone Segment Embeddings",
                 pooling_legend_type="segment_standalone",
                 subplotter=position_similarity_single_plotter.plot_position_similarities_in_subplot,
                 pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
@@ -1031,7 +1122,7 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
             )
 
         # Split by source_lang with identical formatting across all figures
-        from ..core.segment_embedding_analysis import load_exp_info
+        from ..analysis.segment_embedding_analysis import load_exp_info
 
         # Group paths by source_lang
         groups: Dict[str, List[str | Path]] = defaultdict(list)
@@ -1108,7 +1199,7 @@ class SegmentLatechunk2SegmentStandaloneSimPlotter:
                 paths=src_paths,
                 analysis_type=self.analysis_type,
                 document_embedding_type=self.document_embedding_type,
-                title="Similarity between Contextualized Segment Embeddings and Standalone Segment Embeddings",
+                title="Similarity between Contextualized and Standalone Segment Embeddings",
                 pooling_legend_type="segment_standalone",
                 subplotter=wrapper.plot_position_similarities_in_subplot,
                 pooling_strategy_segment_standalone=pooling_strategy_segment_standalone,
@@ -1294,6 +1385,7 @@ def analyze_and_plot_multiple_results(
     return_full_results: bool = False,
     single_model_mode: Optional[bool] = None,
     suppress_default_legend: bool = False,
+    grid_hspace_override: Optional[float] = None,
 ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
     """
     Analyze and plot multiple experiment results in a grid, organized by model name and concat size.
@@ -1320,6 +1412,7 @@ def analyze_and_plot_multiple_results(
         show_plot: Whether to display the plot
         return_full_results: Whether to return the full analysis results
         single_model_mode: If True, optimize layout for single model. If None, auto-detect based on data
+        grid_hspace_override: Optional value to override the GridSpec hspace spacing between subplot rows
 
     Returns:
         If return_full_results is True, returns a dictionary with model names as keys and
@@ -1567,14 +1660,14 @@ def analyze_and_plot_multiple_results(
             figsize=(
                 max_cols_for_single_model
                 * 4.5,  # Much wider - about 4.5 inches per column
-                num_rows * 3.5,  # Shorter height - about 3.5 inches per row
+                num_rows * 3.5 * SUBPLOT_VERTICAL_SCALE,
             )
         )
     else:
         fig = plt.figure(
             figsize=(
                 figure_width * len(model_groups.keys()) * 1.0,
-                subplot_height * num_rows,
+                subplot_height * num_rows * SUBPLOT_VERTICAL_SCALE,
             )
         )
 
@@ -1603,8 +1696,8 @@ def analyze_and_plot_multiple_results(
             total_cols_with_spacing,
             figure=fig,
             width_ratios=width_ratios,
-            wspace=0.35,  # Reduced since y-axis labels are hidden on most subplots
-            hspace=0.30,  # Reduced since x-axis labels are hidden on most subplots
+            wspace=SUBPLOT_COLUMN_SPACING,
+            hspace=grid_hspace_override if grid_hspace_override is not None else 0.45,
         )
     else:
         # For multiple models, use optimized spacing since axis labels are now hidden
@@ -1613,8 +1706,8 @@ def analyze_and_plot_multiple_results(
             total_cols_with_spacing,
             figure=fig,
             width_ratios=width_ratios,
-            wspace=0.35,  # Reduced from 0.45 since y-axis labels are hidden on most subplots
-            hspace=0.30,  # Reduced from 0.35 since x-axis labels are hidden on most subplots
+            wspace=SUBPLOT_COLUMN_SPACING,
+            hspace=grid_hspace_override if grid_hspace_override is not None else 0.45,
         )
 
     # --- Center model names above their columns ---
@@ -1649,6 +1742,7 @@ def analyze_and_plot_multiple_results(
 
     # Calculate the rightmost column that contains actual data (not spacing)
     rightmost_col = -1
+    leftmost_col: Optional[int] = None
     for model_name, results in model_groups.items():
         concat_size_groups = defaultdict(list)
         for result in results:
@@ -1659,6 +1753,8 @@ def analyze_and_plot_multiple_results(
             for local_col_idx, result in enumerate(size_results):
                 col_idx = col_start + local_col_idx
                 rightmost_col = max(rightmost_col, col_idx)
+                if leftmost_col is None or col_idx < leftmost_col:
+                    leftmost_col = col_idx
 
     for model_idx, (model_name, results) in enumerate(model_groups.items()):
         concat_size_groups = defaultdict(list)
@@ -1694,6 +1790,12 @@ def analyze_and_plot_multiple_results(
                     show_token_ylabel = (
                         (col_idx == rightmost_col) if show_lengths else True
                     )
+                    show_token_ticklabels = (
+                        (col_idx == rightmost_col) if show_lengths else True
+                    )
+                    show_cosine_ticklabels = (
+                        True if leftmost_col is None else col_idx == leftmost_col
+                    )
                     plot_in_subplot(
                         ax,
                         result,
@@ -1704,7 +1806,10 @@ def analyze_and_plot_multiple_results(
                         show_lengths=show_lengths,
                         token_ylim=token_ylim,
                         show_token_ylabel=show_token_ylabel,
+                        show_token_ticklabels=show_token_ticklabels,
+                        show_cosine_ticklabels=show_cosine_ticklabels,
                     )
+                    ax.tick_params(axis="y", labelleft=show_cosine_ticklabels)
                 elif analysis_type == "directional_leakage":
                     xlim = model_xlims.get(model_name)
                     plot_in_subplot(
@@ -1746,26 +1851,26 @@ def analyze_and_plot_multiple_results(
                 if row_idx != num_rows - 1:  # Not the bottom row
                     ax.set_xlabel("")
 
-                # Only draw concat_size label once per row, on the leftmost subplot
-                if (
-                    row_idx not in concat_size_label_drawn
-                    and model_idx == 0
-                    and local_col_idx == 0
-                ):
-                    # Adjust label position based on single model mode
-                    x_pos = -0.25 if single_model_mode else -0.50
-                    ax.text(
-                        x_pos,  # Closer to subplot for single model mode
-                        0.5,
-                        f"# of Segments: {concat_size}",
-                        verticalalignment="center",
-                        horizontalalignment="right",
-                        transform=ax.transAxes,
-                        fontsize=12,
-                        fontweight="bold",
-                        rotation=90,
-                    )
-                    concat_size_label_drawn.add(row_idx)
+                # # Only draw concat_size label once per row, on the leftmost subplot
+                # if (
+                #     row_idx not in concat_size_label_drawn
+                #     and model_idx == 0
+                #     and local_col_idx == 0
+                # ):
+                #     # Adjust label position based on single model mode
+                #     x_pos = -0.25 if single_model_mode else -0.50
+                #     ax.text(
+                #         x_pos,  # Closer to subplot for single model mode
+                #         0.5,
+                #         f"# of Segments: {concat_size}",
+                #         verticalalignment="center",
+                #         horizontalalignment="right",
+                #         transform=ax.transAxes,
+                #         fontsize=12,
+                #         fontweight="bold",
+                #         rotation=90,
+                #     )
+                #     concat_size_label_drawn.add(row_idx)
 
             # Fill in any empty spots in the grid with blank subplots
             max_cols_for_this_model_size = max_variations_per_model_size.get(
@@ -1806,7 +1911,7 @@ def analyze_and_plot_multiple_results(
                 # For multi-model plots, don't include model name in title
                 fig.suptitle(
                     title,
-                    fontsize=22,
+                    fontsize=31,  # before: 28
                     fontweight="bold",
                     y=y_title,
                 )
@@ -1816,7 +1921,7 @@ def analyze_and_plot_multiple_results(
                 title_with_model = title
                 fig.suptitle(
                     title_with_model,
-                    fontsize=22,
+                    fontsize=31,  # before: 28
                     fontweight="bold",
                     y=y_title,
                 )
@@ -1825,7 +1930,7 @@ def analyze_and_plot_multiple_results(
             title_with_model = f"{title} - {single_model_name}"
             fig.suptitle(
                 title_with_model,
-                fontsize=22,
+                fontsize=28,
                 fontweight="bold",
                 y=y_title,
             )
@@ -1915,7 +2020,11 @@ def analyze_and_plot_multiple_results(
 
             if is_multi_model:
                 # Show model names instead of matryoshka dimensions
-                model_colors = {"mGTE": "blue", "jina-v3": "red", "qwen3-0.6B": "green"}
+                model_colors = {
+                    "mGTE": "blue",
+                    "jina-v3": "red",
+                    # "qwen3-0.6B": "green"
+                }
 
                 for model_name, color in model_colors.items():
                     model_line = mlines.Line2D(
@@ -1924,7 +2033,7 @@ def analyze_and_plot_multiple_results(
                         color=color,
                         marker="o",
                         linestyle="-",
-                        linewidth=2,
+                        linewidth=LEGEND_LINEWIDTH,
                         label=model_name,
                     )
                     handles.append(model_line)
@@ -1936,7 +2045,7 @@ def analyze_and_plot_multiple_results(
                     color="red",
                     marker="o",
                     linestyle="-",
-                    linewidth=2,
+                    linewidth=LEGEND_LINEWIDTH,
                     # label="Full Embedding",
                     label="jina-v3",
                 )
@@ -1965,7 +2074,7 @@ def analyze_and_plot_multiple_results(
                             color=color,
                             marker="o",
                             linestyle="--" if i >= 4 else "-",
-                            linewidth=2,
+                            linewidth=LEGEND_LINEWIDTH,
                             label=f"Matryoshka D{dim}",
                         )
                         handles.append(mat_line)
@@ -1979,15 +2088,17 @@ def analyze_and_plot_multiple_results(
             # Determine number of columns based on number of handles
             ncol = min(len(handles), 6)  # Maximum 6 columns to avoid overcrowding
 
+            legend_fontsize = 27  # if is_multi_model else 9
             fig.legend(
                 handles=handles,
                 loc="lower center",
                 bbox_to_anchor=(0.5, legend_y),
                 ncol=ncol,
-                fontsize=9,
+                fontsize=legend_fontsize,
                 frameon=False,
                 columnspacing=2.0,
                 handletextpad=1.2,
+                markerscale=2.5,
             )
         elif analysis_type == "positional_directional_leakage":
             # Position analysis legend - check if Matryoshka dimensions are present
@@ -2255,7 +2366,7 @@ class MultiModelPositionSimilaritySinglePlotter:
 
     def _group_paths_by_config(self):
         """Group paths by experiment configuration (excluding model name)."""
-        from ..core.segment_embedding_analysis import load_exp_info
+        from ..analysis.segment_embedding_analysis import load_exp_info
 
         config_groups = defaultdict(list)
         for path in self.paths:
@@ -2289,6 +2400,8 @@ class MultiModelPositionSimilaritySinglePlotter:
         show_lengths: bool = False,
         token_ylim: Optional[Tuple[float, float]] = None,
         show_token_ylabel: bool = True,
+        show_token_ticklabels: bool = True,
+        show_cosine_ticklabels: bool = True,
     ) -> None:
         """
         Plot position-based similarity results showing different models as different lines.
@@ -2317,7 +2430,11 @@ class MultiModelPositionSimilaritySinglePlotter:
         config_key = (concat_size, lang_key)
 
         # Define colors for different models
-        model_colors = {"mGTE": "blue", "jina-v3": "red", "qwen3-0.6B": "green"}
+        model_colors = {
+            "mGTE": "blue",
+            "jina-v3": "red",
+            # "qwen3-0.6B": "green"
+        }
 
         # Get all models for this config and plot them
         if config_key in config_groups:
@@ -2344,7 +2461,8 @@ class MultiModelPositionSimilaritySinglePlotter:
                         result["position_means"],
                         "o-",
                         color=color,
-                        linewidth=2,
+                        linewidth=PLOT_LINEWIDTH,
+                        markersize=PLOT_MARKERSIZE,
                         label=abbreviated_name,
                     )
 
@@ -2368,8 +2486,15 @@ class MultiModelPositionSimilaritySinglePlotter:
                         ax.add_patch(rect)
 
         # Add labels (compact for subplots)
-        ax.set_xlabel("Position")
-        ax.set_ylabel("Cosine Similarity")
+        ax.set_xlabel(
+            "Position",
+            fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            labelpad=15,
+        )
+        ax.set_ylabel(
+            "Cosine Similarity",
+            fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+        )
 
         # Add title with language information (same format as original plot method)
         if show_title:
@@ -2380,17 +2505,20 @@ class MultiModelPositionSimilaritySinglePlotter:
             # Add language information if available
             if target_lang and source_lang:
                 title_text = (
-                    f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                    f"Lang.: [{target_lang}, {source_lang}, ..., {source_lang}]"
                 )
             elif source_lang:
-                title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+                title_text = f"Lang.: [{source_lang}, ..., {source_lang}]"
             else:
                 title_text = f"Concat Size: {concat_size}"
 
             if show_segment_lengths and range_id != "N/A":
                 title_text += f"; SL:: {range_id}"
 
-            ax.set_title(title_text, fontsize=11)
+            ax.set_title(
+                title_text,
+                fontsize=BASE_SUBPLOT_TITLE_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            )
 
         # Set x-axis ticks to be integers
         ax.set_xticks(positions)
@@ -2398,6 +2526,10 @@ class MultiModelPositionSimilaritySinglePlotter:
         # Set y-axis limits if provided
         if ylim is not None:
             ax.set_ylim(ylim)
+
+        # Major ticks remain at 0.2, minor ticks provide 0.1 grid spacing
+        ax.yaxis.set_major_locator(MultipleLocator(0.2))
+        ax.yaxis.set_minor_locator(MultipleLocator(0.1))
 
         # Format y-axis to show appropriate precision and prevent duplicate labels
         # Use more decimal places if the y-range is small to avoid duplicate tick labels
@@ -2412,6 +2544,16 @@ class MultiModelPositionSimilaritySinglePlotter:
         else:
             # Default formatting
             ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+        ax.tick_params(
+            axis="x",
+            labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            pad=POS_LABEL_PAD,
+        )
+        ax.tick_params(
+            axis="y",
+            labelleft=show_cosine_ticklabels,
+            labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+        )
 
         # Add token length bar chart on right y-axis if requested
         if show_lengths and "token_lengths" in base_result:
@@ -2436,8 +2578,20 @@ class MultiModelPositionSimilaritySinglePlotter:
 
             # Format token length y-axis
             if show_token_ylabel:
-                ax2.set_ylabel("Token Length", color="gray")
-            ax2.tick_params(axis="y", labelcolor="gray")
+                ax2.set_ylabel(
+                    "Token Length",
+                    color="gray",
+                    fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                )
+            ax2.tick_params(
+                axis="y",
+                labelcolor="gray",
+                labelright=show_token_ticklabels,
+                labelleft=False,
+                labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            )
+            if not show_token_ticklabels:
+                ax2.set_ylabel("")
             ax2.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
 
             # Ensure main plot is in front
@@ -2445,7 +2599,8 @@ class MultiModelPositionSimilaritySinglePlotter:
             ax.patch.set_visible(False)  # Make main plot background transparent
 
         # Add grid for better readability
-        ax.grid(True, linestyle="--", alpha=0.7)
+        ax.grid(True, which="major", linestyle="--", alpha=0.7)
+        ax.grid(True, which="minor", linestyle="--", alpha=0.7)
 
     def plot_position_similarities_in_subplot(
         self,
@@ -2458,204 +2613,41 @@ class MultiModelPositionSimilaritySinglePlotter:
         show_lengths: bool = False,
         token_ylim: Optional[Tuple[float, float]] = None,
         show_token_ylabel: bool = True,
+        show_token_ticklabels: bool = True,
+        show_cosine_ticklabels: bool = True,
     ) -> None:
-        """
-        Plot position-based similarity results showing different models as different lines.
-        """
-        # Extract basic information
-        position_means = base_result["position_means"]
-        position_ci_lower = base_result["position_ci_lower"]
-        position_ci_upper = base_result["position_ci_upper"]
-        positions = list(range(1, len(position_means) + 1))
+        """Fallback plotting path using only the provided base result."""
 
-        # Extract range ID if available
-        range_id = base_result.get("range_id", "N/A")
-
-        # Find the config key for this result
         concat_size = base_result["concat_size"]
         source_lang = base_result.get("source_lang", "unknown")
-        target_lang = base_result.get("target_lang", None)
-
-        # Create language key that matches the grouping logic
-        if target_lang is None:
-            lang_key = source_lang  # Monolingual: e.g., "de"
-        else:
-            lang_key = f"{source_lang}_{target_lang}"  # Multilingual: e.g., "de_en"
-
-        config_key = (concat_size, lang_key)
-
-        # Define colors for different models
-        model_colors = {"mGTE": "blue", "jina-v3": "red", "qwen3-0.6B": "green"}
-
-        # Plot the base result first (this will be the first model)
-        base_model_name = base_result.get("abbreviated_model_name", "Unknown")
-        base_color = model_colors.get(base_model_name, "blue")
-
-        ax.plot(
-            positions,
-            position_means,
-            "o-",
-            color=base_color,
-            linewidth=2,
-            label=base_model_name,
+        target_lang = base_result.get("target_lang")
+        lang_key = (
+            source_lang if target_lang is None else f"{source_lang}_{target_lang}"
         )
+        config_key = (concat_size, lang_key)
+        model_name = base_result.get("model_name", "unknown")
 
-        # Add 95% confidence interval for base result
-        for i, (pos, mean, ci_lower, ci_upper) in enumerate(
-            zip(positions, position_means, position_ci_lower, position_ci_upper)
-        ):
-            bar_width = 0.4  # Same width as original single plotter
-            rect = plt.Rectangle(
-                (pos - bar_width / 2, ci_lower),
-                bar_width,
-                ci_upper - ci_lower,
-                color=base_color,
-                alpha=0.2,
-            )
-            ax.add_patch(rect)
+        minimal_all_results: Dict[Tuple, Dict[str, Any]] = {
+            (config_key, model_name): base_result
+        }
+        minimal_config_groups: Dict[Tuple, List[Tuple]] = defaultdict(list)
+        path = base_result.get("path")
+        assert path is not None, "Base result must include the experiment path."
+        minimal_config_groups[config_key].append((path, model_name))
 
-        # Plot other models if available in the config
-        if config_key in self.config_to_paths:
-            for path, model_name in self.config_to_paths[config_key]:
-                if model_name != base_result.get("model_name", ""):
-                    # Get abbreviated model name
-                    if "Alibaba-NLP/gte-multilingual-base" in model_name:
-                        abbreviated_name = "mGTE"
-                    elif "jinaai/jina-embeddings-v3" in model_name:
-                        abbreviated_name = "jina-v3"
-                    elif "Qwen/Qwen3-Embedding-0.6B" in model_name:
-                        abbreviated_name = "qwen3-0.6B"
-                    else:
-                        abbreviated_name = model_name
-
-                    # Skip if this is the same as base model
-                    if abbreviated_name == base_model_name:
-                        continue
-
-                    # Get pooling strategy for this model
-                    pooling_strategy = self.model_pooling_strats.get(model_name, "cls")
-
-                    # Run analysis for this path
-                    try:
-                        doc_seg_analyzer = DocumentSegmentSimilarityAnalyzer()
-                        result = doc_seg_analyzer.run_position_analysis(
-                            path=path,
-                            document_embedding_type="document-level",
-                            pooling_strategy_segment_standalone=pooling_strategy,
-                            pooling_strategy_document=pooling_strategy,
-                            matryoshka_dimensions=None,
-                        )
-
-                        # Get color for this model
-                        color = model_colors.get(abbreviated_name, "black")
-
-                        # Plot this model's results
-                        ax.plot(
-                            positions,
-                            result["position_means"],
-                            "o-",
-                            color=color,
-                            linewidth=2,
-                            label=abbreviated_name,
-                        )
-
-                        # Add confidence interval
-                        for i, (pos, mean, ci_lower, ci_upper) in enumerate(
-                            zip(
-                                positions,
-                                result["position_means"],
-                                result["position_ci_lower"],
-                                result["position_ci_upper"],
-                            )
-                        ):
-                            bar_width = 0.4  # Same width as original single plotter
-                            rect = plt.Rectangle(
-                                (pos - bar_width / 2, ci_lower),
-                                bar_width,
-                                ci_upper - ci_lower,
-                                color=color,
-                                alpha=0.2,
-                            )
-                            ax.add_patch(rect)
-                    except Exception as e:
-                        print(f"Warning: Could not analyze {path}: {e}")
-
-        # Add labels (compact for subplots)
-        ax.set_xlabel("Position")
-        ax.set_ylabel("Cosine Similarity")
-
-        # Add title with language information (same format as original plot method)
-        if show_title:
-            # Get language information if available
-            source_lang = base_result.get("source_lang")
-            target_lang = base_result.get("target_lang")
-
-            # Add language information if available
-            if target_lang and source_lang:
-                title_text = (
-                    f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
-                )
-            elif source_lang:
-                title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
-            else:
-                title_text = f"Concat Size: {concat_size}"
-
-            if show_segment_lengths and range_id != "N/A":
-                title_text += f"; SL:: {range_id}"
-
-            ax.set_title(title_text, fontsize=11)
-
-        # Set x-axis ticks to be integers
-        ax.set_xticks(positions)
-
-        # Set y-axis limits if provided
-        if ylim is not None:
-            ax.set_ylim(ylim)
-
-        # Format y-axis to show appropriate precision and prevent duplicate labels
-        # Use more decimal places if the y-range is small to avoid duplicate tick labels
-        if ylim is not None:
-            y_range = ylim[1] - ylim[0]
-            if y_range < 0.3:
-                # For small ranges, use 2 decimal places
-                ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
-            else:
-                # For larger ranges, 1 decimal place is sufficient
-                ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
-        else:
-            # Default formatting
-            ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
-
-        # Add token length bar chart on right y-axis if requested
-        if show_lengths and "token_lengths" in base_result:
-            ax2 = ax.twinx()
-            token_data = base_result["token_lengths"]
-            token_means = token_data["position_means"]
-
-            # Plot token length bars with transparency
-            bars = ax2.bar(
-                positions,
-                token_means,
-                alpha=0.3,
-                color="gray",
-                width=0.6,
-                label="Token Lengths",
-                zorder=1,  # Put bars behind line plots
-            )
-
-            # Set token length y-axis limits if provided
-            if token_ylim is not None:
-                ax2.set_ylim(token_ylim)
-
-            # Format token length y-axis
-            if show_token_ylabel:
-                ax2.set_ylabel("Token Length", color="gray")
-            ax2.tick_params(axis="y", labelcolor="gray")
-            ax2.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
-
-            # Ensure main plot is in front
-            ax.set_zorder(ax2.get_zorder() + 1)
-            ax.patch.set_visible(False)  # Make main plot background transparent
-
-        # Add grid for better readability
-        ax.grid(True, linestyle="--", alpha=0.7)
+        self.plot_position_similarities_in_subplot_with_precomputed(
+            ax,
+            base_result,
+            minimal_all_results,
+            minimal_config_groups,
+            self.model_pooling_strats,
+            show_title=show_title,
+            compact=compact,
+            ylim=ylim,
+            show_segment_lengths=show_segment_lengths,
+            show_lengths=show_lengths,
+            token_ylim=token_ylim,
+            show_token_ylabel=show_token_ylabel,
+            show_token_ticklabels=show_token_ticklabels,
+            show_cosine_ticklabels=show_cosine_ticklabels,
+        )

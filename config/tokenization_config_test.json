@@ -1,7 +1,0 @@
-{
-    "dataset_path": "/Users/eliasschuhmacher/Projects/LoCoBench/data/combined_en_wikipedia",
-    "dataset_format": "arrow",
-    "model_name": "Alibaba-NLP/gte-multilingual-base",
-    "id_column": "id",
-    "text_column": "text"
-}

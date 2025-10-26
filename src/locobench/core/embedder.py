@@ -1,3 +1,5 @@
+# src/locobench/core/embedder.py
+
 """
 Document Embedder Module
 
@@ -9,13 +11,14 @@ and late-chunking embedding (where documents are embedded as part of a larger co
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from transformers import AutoModel
+from transformers import AutoModel, AutoTokenizer
 from typing import List, Dict, Union, Literal, Optional, Any, Tuple
 import tqdm
 import importlib.util
 from torch import Tensor
 import nnsight
 from types import SimpleNamespace
+import numpy as np
 
 
 DEVICE = (
@@ -257,8 +260,13 @@ class BaseEmbedder:
                     qmask_sel_b = qmask_sel.view(B, 1, R, 1)  # (B,1,R,1)
 
                     # Compute basket ids per position (shared across batch/heads)
-                    max_baskets = (K + S - 1) // S
-                    basket_ids = (pos // S).clamp_max(max_baskets - 1)  # (1,K)
+                    # Place CLS (pos==0) in its own basket 0; content starts at basket 1 in size-S groups.
+                    content_buckets = torch.where(
+                        pos == 0, torch.zeros_like(pos), 1 + ((pos - 1) // S)
+                    )  # (1,K)
+                    max_content_baskets = 0 if K <= 1 else ((K - 1 + (S - 1)) // S)
+                    max_baskets = 1 + max_content_baskets
+                    basket_ids = content_buckets.clamp_max(max_baskets - 1)  # (1,K)
                     basket_ids = basket_ids.view(1, 1, 1, K).expand(
                         B, H, R, K
                     )  # (B,H,R,K)
@@ -274,9 +282,12 @@ class BaseEmbedder:
                     # Gather per-position denominators: (B,H,R,K)
                     denom = bucket_sums.gather(dim=-1, index=basket_ids)
 
-                    # Number of baskets per item: ceil(valid_len / S) -> (B,)
-                    n_baskets = ((valid_len + (S - 1)) // S).to(dtype=attn.dtype)
-                    n_baskets = n_baskets.view(B, 1, 1, 1)  # (B,1,1,1)
+                    # Number of baskets per item with CLS isolated:
+                    # n_baskets = 1 (CLS) + ceil(max(valid_len-1, 0) / S)
+                    n_content = ((torch.clamp_min(valid_len - 1, 0) + (S - 1)) // S).to(
+                        dtype=attn.dtype
+                    )
+                    n_baskets = (1 + n_content).view(B, 1, 1, 1)  # (B,1,1,1)
 
                     # Apply calibration formula per position (masked positions remain zero)
                     scaled = sel_rows_masked * S  # (B,H,R,K)
@@ -727,3 +738,157 @@ class LateChunkingEmbedder(BaseEmbedder):
                 )
 
         return all_embeddings
+
+
+class TextEmbedder:
+    """
+    Lightweight SentenceTransformers-like wrapper focused on encode().
+
+    Constraints/assumptions:
+        - Only supports model_name == "Alibaba-NLP/gte-multilingual-base".
+        - Uses model-appropriate pooling selected via an instance-level mapping
+            (for Alibaba: CLS pooling). Normalization is controlled at class level.
+    - Optional attention calibration only if the instance was created with
+      apply_attn_calibration=True and required calibration settings.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        trust_remote_code: bool = True,
+        *,
+        device: Optional[str] = None,
+        normalize: bool = True,
+        apply_attn_calibration: bool = False,
+        calib_layers: Optional[str] = None,
+        calib_source_tokens: Optional[str] = None,
+        calib_basket_size: Optional[int] = None,
+        device_map: Optional[Union[str, Dict[str, Union[int, str]]]] = None,
+    ) -> None:
+        assert (
+            model_name == "Alibaba-NLP/gte-multilingual-base"
+        ), "TextEmbedder currently supports only 'Alibaba-NLP/gte-multilingual-base'"
+
+        # Backend for model execution and pooling
+        self._backend = BaseEmbedder(
+            model_name=model_name,
+            device=device,
+            normalize=normalize,
+            jina_v3_task="text-matching",
+            apply_attn_calibration=apply_attn_calibration,
+            calib_layers=calib_layers,
+            calib_source_tokens=calib_source_tokens,
+            calib_basket_size=calib_basket_size,
+            device_map=device_map,
+        )
+
+        # Tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name, trust_remote_code=trust_remote_code
+        )
+
+        # Mirror a subset of SentenceTransformers attributes for familiarity
+        self.model_name = model_name
+        self.normalize = normalize
+
+        # Instance-level mapping from model name to pooling method
+        # Supported methods: "cls", "mean"
+        self.pooling_by_model: Dict[str, str] = {
+            "Alibaba-NLP/gte-multilingual-base": "cls",
+        }
+
+    def encode(
+        self,
+        sentences: Union[str, List[str]],
+        *,
+        batch_size: int = 32,
+        show_progress_bar: bool = False,
+        convert_to_numpy: bool = True,
+        convert_to_tensor: bool = False,
+        normalize_embeddings: Optional[bool] = None,
+        device: Optional[str] = None,
+    ) -> Union[np.ndarray, torch.Tensor]:
+        """Encode a sentence or list of sentences into embeddings.
+
+        Inputs (subset compatible with SentenceTransformers.encode used in notebooks):
+        - sentences: str | List[str]
+        - batch_size: int (default 32)
+        - show_progress_bar: bool
+        - convert_to_numpy: bool (default True)
+        - convert_to_tensor: bool (default False)
+        - normalize_embeddings: ignored; normalization is controlled at class level
+
+        Returns: embeddings as numpy array (N, D) by default or torch.Tensor when requested.
+        """
+        # Input normalization
+        if isinstance(sentences, str):
+            sentences_list: List[str] = [sentences]
+        else:
+            sentences_list = list(sentences)
+        assert len(sentences_list) > 0, "No sentences to encode"
+
+        # Device selection respects backend unless explicitly overridden
+        use_device = device if device is not None else self._backend.device
+
+        # Batch loop
+        all_embeddings: List[torch.Tensor] = []
+        rng = range(0, len(sentences_list), batch_size)
+        iterator = tqdm.tqdm(rng, desc="Encoding", disable=not show_progress_bar)
+        for start in iterator:
+            end = min(start + batch_size, len(sentences_list))
+            chunk = sentences_list[start:end]
+
+            enc = self.tokenizer(
+                chunk,
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+            )
+            input_ids: torch.Tensor = enc["input_ids"]
+            attention_mask: torch.Tensor = enc["attention_mask"]
+            assert input_ids.dim() == 2 and attention_mask.dim() == 2
+            B, L = input_ids.shape
+            assert attention_mask.shape == (B, L)
+            print(f"Processing batch of size {B} with sequence length {L}")
+
+            # Move if not using device_map; BaseEmbedder.get_model_outputs handles this as well
+            if self._backend.device_map is None:
+                input_ids = input_ids.to(use_device)
+                attention_mask = attention_mask.to(use_device)
+
+            # Forward (calibration behavior is controlled at instance level in BaseEmbedder)
+            outputs = self._backend.get_model_outputs(
+                input_ids=input_ids, attention_mask=attention_mask
+            )
+
+            last_hidden_state: torch.Tensor = outputs.last_hidden_state
+            assert last_hidden_state.dim() == 3 and last_hidden_state.shape[0] == B
+
+            # Model-appropriate pooling
+            pooling_method = self.pooling_by_model.get(self.model_name, "mean")
+            if pooling_method == "cls":
+                pooled = last_hidden_state[:, 0, :]
+            elif pooling_method == "mean":
+                pooled = self._backend.mean_pooling(last_hidden_state, attention_mask)
+            else:
+                raise AssertionError(f"Unsupported pooling method: {pooling_method}")
+            assert (
+                pooled.dim() == 2 and pooled.shape[0] == B
+            ), f"Pooled shape mismatch: {pooled.shape}, expected (B, D) with B={B}"
+
+            # Normalize at class level
+            if self.normalize:
+                pooled = F.normalize(pooled, p=2, dim=1)
+
+            # Accumulate on CPU to match typical SentenceTransformers behavior
+            all_embeddings.append(pooled.cpu())
+
+        # Concat
+        embeddings = torch.cat(all_embeddings, dim=0)
+
+        # Output formatting
+        if convert_to_tensor:
+            return embeddings
+        if convert_to_numpy:
+            return embeddings.detach().numpy()
+        return embeddings

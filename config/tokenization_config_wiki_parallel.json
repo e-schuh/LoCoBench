@@ -1,5 +1,5 @@
 {
-    "dataset_path": "/Users/eliasschuhmacher/Projects/LoCoBench/data/wiki_parallel_en_de_hi_it_ko",
+    "dataset_path": "data/wiki_parallel_en_de_hi_it_ko_zh",
     "dataset_format": "arrow",
     "model_name": "Alibaba-NLP/gte-multilingual-base",
     "id_column": "id",

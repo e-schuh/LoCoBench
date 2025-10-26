@@ -17,7 +17,7 @@ import statsmodels.formula.api as smf  # Formula OLS
 import pingouin as pg  # Repeated-measures ANOVA
 
 # Reuse the analyzers and experiment info loader used by the visualization code
-from ..core.segment_embedding_analysis import (
+from .segment_embedding_analysis import (
     DocumentSegmentSimilarityAnalyzer,
     load_exp_info,
 )
@@ -26,6 +26,7 @@ from ..core.segment_embedding_analysis import (
 def collect_multi_model_position_analysis_results(
     paths: List[str | Path],
     model_pooling_strats: Dict[str, str],
+    document_embedding_type: str = "document-level",
 ) -> Dict[Tuple[Tuple[int, str], str], Dict[str, Any]]:
     """
     Compute and collect position-analysis results for multiple experiments and models.
@@ -81,7 +82,7 @@ def collect_multi_model_position_analysis_results(
 
             result = doc_seg_analyzer.run_position_analysis(
                 path=path,
-                document_embedding_type="document-level",
+                document_embedding_type=document_embedding_type,
                 pooling_strategy_segment_standalone=pooling_strategy,
                 pooling_strategy_document=pooling_strategy,
                 matryoshka_dimensions=None,
@@ -576,7 +577,7 @@ def build_ols_coefficients_table_latex(
                 pval = float(ols_sum[coef_name]["pval"])  # type: ignore[index]
                 row_cells.append(_fmt(beta, pval))
             lines.append(
-                f"    & $\\olsBetai{{{i}}}$ $(\\olsPi{{{i+1}}})$ & "
+                f"    & $\\olsBetai{{{i+1}}}$ $(\\olsPi{{{i+1}}})$ & "
                 + " & ".join(row_cells)
                 + " \\\\"
             )
@@ -761,7 +762,7 @@ def build_anova_results_table_latex(
             etas.append(_fmt_eta(e))
 
         lines.append(
-            f"    \\multirow{{2}}{{*}}{{{n}}} & $\\pValAnova$ & "
+            f"    \\multirow{{2}}{{*}}{{{n}}} & $\\pVal$ & "
             + " & ".join(pvals)
             + " \\\\"
         )
@@ -779,3 +780,184 @@ def build_anova_results_table_latex(
     lines.append("\\end{table}")
 
     return "\n".join(lines)
+
+
+def build_dataset_sample_table(dataset: Any, dataset_id: int, length: int) -> str:
+    """Create a LaTeX table showing truncated text samples per language split."""
+    assert dataset is not None, "dataset must be provided"
+    assert isinstance(dataset_id, int) and dataset_id >= 0, "dataset_id must be >= 0"
+    assert isinstance(length, int) and length > 0, "length must be > 0"
+
+    lang_rows: List[Tuple[str, str, str]] = [
+        ("en", "English", ""),
+        ("zh", "Chinese", "\\CJKfont "),
+        ("de", "German", ""),
+        ("it", "Italian", ""),
+        ("ko", "Korean", "\\KRfont "),
+        ("hi", "Hindi", "\\DEVfont "),
+    ]
+
+    def _escape_latex(text: str) -> str:
+        replacements = {
+            "\\": r"\\textbackslash{}",
+            "&": r"\\&",
+            "%": r"\\%",
+            "$": r"\\$",
+            "#": r"\\#",
+            "_": r"\\_",
+            "{": r"\\{",
+            "}": r"\\}",
+            "~": r"\\textasciitilde{}",
+            "^": r"\\textasciicircum{}",
+        }
+        escaped = text
+        for key, val in replacements.items():
+            escaped = escaped.replace(key, val)
+        return escaped
+
+    rows: List[str] = []
+    for idx, (lang_code, display_name, macro) in enumerate(lang_rows):
+        assert lang_code in dataset, f"Missing language split '{lang_code}'"
+        split = dataset[lang_code]
+        assert dataset_id < len(
+            split
+        ), f"dataset_id {dataset_id} out of range for '{lang_code}'"
+        record = split[dataset_id]
+        assert "text" in record, "Missing 'text' field in dataset record"
+        text = record["text"]
+        assert isinstance(text, str), "Record 'text' must be a string"
+        snippet_raw = text[:length]
+        snippet_compact = " ".join(snippet_raw.split())
+        snippet = _escape_latex(snippet_compact)
+        content = f"{macro}{snippet}" if macro else snippet
+        rows.append(f"    \\textbf{{{display_name}}} & {{{content}}} \\\\")
+        if idx != len(lang_rows) - 1:
+            rows.append("    \\addlinespace[2ex]")
+
+    lines: List[str] = []
+    lines.append("\\begin{table}[tb]")
+    lines.append("  \\centering")
+    lines.append("  \\small")
+    lines.append("  \\setlength{\\tabcolsep}{6pt}")
+    lines.append(
+        "  \\begin{tabularx}{\\linewidth}{@{}l >{\\RaggedRight\\arraybackslash}X@{}}"
+    )
+    lines.append("    \\toprule")
+    lines.append("    \\addlinespace[2ex]")
+    lines.extend(rows)
+    lines.append("    \\bottomrule")
+    lines.append("  \\end{tabularx}")
+    lines.append("  \\label{tab:wiki-comparable-sample}")
+    lines.append("\\end{table}")
+
+    return "\n".join(lines)
+
+
+def categorize_paths_by_root(
+    parallel_dir: str, relative_root: str, language_order: Optional[List[str]] = None
+) -> Tuple[List[str], List[str]]:
+    """
+    Categorize paths based on a given root into monolingual and multilingual lists.
+
+    Args:
+        relative_root (str): The root pattern up to and including "parallel__"
+                           e.g., "jinaai_jina-embeddings-v3__wiki_parallel_en_de_hi_it_ko_zh__parallel__"
+        language_order (Optional[List[str]]): Custom order for language codes.
+                                             e.g., ["en", "de", "it", "ko", "hi"]
+                                             If None, paths are sorted alphabetically.
+
+    Returns:
+        Tuple[List[str], List[str]]: (monolingual_paths, multilingual_paths)
+
+    Example:
+        >>> mono, multi = categorize_paths_by_root(
+        ...     "jinaai_jina-embeddings-v3__wiki_parallel_en_de_hi_it_ko__parallel__",
+        ...     language_order=["en", "de", "it", "ko", "hi"]
+        ... )
+        >>> print(f"Found {len(mono)} monolingual and {len(multi)} multilingual paths")
+    """
+    import os
+    import glob
+    from typing import Tuple, List, Optional
+    from collections import defaultdict
+    import itertools
+
+    pattern = os.path.join(parallel_dir, "*")
+    all_subdirs = [d for d in glob.glob(pattern) if os.path.isdir(d)]
+
+    root_pattern = relative_root.rstrip("/\\")
+
+    # Group paths by language combination and then by concat size
+    mono_groups = defaultdict(list)  # {language: [paths]}
+    multi_groups = defaultdict(list)  # {language_combination: [paths]}
+
+    for subdir in all_subdirs:
+        dir_name = os.path.basename(subdir)
+
+        if dir_name.startswith(root_pattern):
+            remaining = dir_name[len(root_pattern) :]
+
+            if remaining and "__concat-size" in remaining:
+                parts = remaining.split("__")
+                if len(parts) >= 2:
+                    language_part = parts[0]
+
+                    if "_" in language_part:
+                        # Multilingual: contains underscore (e.g., "en_de", "hi_it")
+                        multi_groups[language_part].append(os.path.relpath(subdir))
+                    else:
+                        # Monolingual: single language code (e.g., "en", "de", "hi")
+                        mono_groups[language_part].append(os.path.relpath(subdir))
+
+    # Sort each group by the rest of the path (concat-size, range, etc.)
+    for lang in mono_groups:
+        mono_groups[lang].sort()
+    for lang_combo in multi_groups:
+        multi_groups[lang_combo].sort()
+
+    # Determine the final ordering
+    if language_order is None:
+        # Default: alphabetical sorting
+        monolingual_paths = []
+        for lang in sorted(mono_groups.keys()):
+            monolingual_paths.extend(mono_groups[lang])
+
+        multilingual_paths = []
+        for lang_combo in sorted(multi_groups.keys()):
+            multilingual_paths.extend(multi_groups[lang_combo])
+    else:
+        # Custom ordering based on language_order
+        monolingual_paths = []
+
+        # For monolingual: follow the exact order specified
+        for lang in language_order:
+            if lang in mono_groups:
+                monolingual_paths.extend(mono_groups[lang])
+
+        # Add any languages not in the specified order (in alphabetical order)
+        remaining_mono_langs = set(mono_groups.keys()) - set(language_order)
+        for lang in sorted(remaining_mono_langs):
+            monolingual_paths.extend(mono_groups[lang])
+
+        # For multilingual: create all combinations following the language_order
+        multilingual_paths = []
+
+        # Generate all possible pairs in the order specified
+        lang_pairs_in_order = []
+        for i, lang1 in enumerate(language_order):
+            for j, lang2 in enumerate(language_order):
+                if i != j:  # Different languages
+                    # Both directions: lang1_lang2 and lang2_lang1
+                    lang_pairs_in_order.append(f"{lang1}_{lang2}")
+
+        # Add paths for each language combination in the specified order
+        for lang_combo in lang_pairs_in_order:
+            if lang_combo in multi_groups:
+                multilingual_paths.extend(multi_groups[lang_combo])
+
+        # Add any remaining combinations not covered by the language_order
+        remaining_multi_combos = set(multi_groups.keys()) - set(lang_pairs_in_order)
+        for lang_combo in sorted(remaining_multi_combos):
+            multilingual_paths.extend(multi_groups[lang_combo])
+
+    return monolingual_paths, multilingual_paths

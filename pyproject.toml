@@ -20,6 +20,9 @@ einops = "^0.8.1"
 seaborn = "^0.13.2"
 nnterp = {version = ">0.4.9", allow-prereleases = true}
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.0"
+
 [tool.poetry.scripts]
 # run-embedding-experiment = "locobench.scripts.run_experiment:main"
 

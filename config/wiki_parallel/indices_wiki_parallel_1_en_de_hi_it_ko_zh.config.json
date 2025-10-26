@@ -1,0 +1,26 @@
+{
+    "dataset_dir": "data/wiki_parallel_en_de_hi_it_ko_zh/tokenized__Alibaba-NLP_gte-multilingual-base",
+    "source_lang": "en",
+    "target_langs": [
+        "de",
+        "hi",
+        "it",
+        "ko",
+        "zh"
+    ],
+    "concat_size": 3,
+    "sample_size": 1000,
+    "max_total_length": 8192,
+    "source_segment_range": [
+        1000,
+        2000
+    ],
+    "source_target_segment_diffs": [
+        0.7,
+        0.7,
+        0.7,
+        0.7,
+        0.7
+    ],
+    "output_path": "config/wiki_parallel/indices_wiki_parallel_1_en_de_hi_it_ko_zh.json"
+}

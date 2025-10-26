@@ -2,12 +2,22 @@ import os
 
 from typing import Dict, List, Tuple, Set, Any, Optional
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FormatStrFormatter
+from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 from pathlib import Path
 import numpy as np
 
+from .plot_constants import (
+    SUBPLOT_FONT_SCALE,
+    BASE_AXIS_LABEL_FONT_SIZE,
+    BASE_TICK_LABEL_FONT_SIZE,
+    BASE_SUBPLOT_TITLE_FONT_SIZE,
+    PLOT_LINEWIDTH,
+    PLOT_MARKERSIZE,
+    POS_LABEL_PAD,
+)
+
 # Import the required analyses functions
-from ..core.segment_embedding_analysis import (
+from ..analysis.segment_embedding_analysis import (
     DocumentSegmentSimilarityAnalyzer,
     DirectionalLeakageAnalyzer,
     PositionalDirectionalLeakageAnalyzer,
@@ -33,6 +43,8 @@ class PositionSimilaritySinglePlotter:
         show_lengths: bool = False,
         token_ylim: Optional[Tuple[float, float]] = None,
         show_token_ylabel: bool = True,
+        show_token_ticklabels: bool = True,
+        show_cosine_ticklabels: bool = True,
     ) -> None:
         """
         Plot position-based similarity results in a given subplot.
@@ -70,7 +82,8 @@ class PositionSimilaritySinglePlotter:
             position_means,
             "o-",
             color="red",
-            linewidth=2,
+            linewidth=PLOT_LINEWIDTH,
+            markersize=PLOT_MARKERSIZE,
             label="Full",
         )
 
@@ -118,7 +131,8 @@ class PositionSimilaritySinglePlotter:
                         dim_means,
                         "o-",
                         color=color,
-                        linewidth=2,
+                        linewidth=PLOT_LINEWIDTH,
+                        markersize=PLOT_MARKERSIZE,
                         label=f"D{dim}",
                         linestyle=(
                             "--" if i >= 4 else "-"
@@ -140,8 +154,15 @@ class PositionSimilaritySinglePlotter:
                         ax.add_patch(rect)
 
         # Add labels (compact for subplots)
-        ax.set_xlabel("Position")
-        ax.set_ylabel("Cosine Similarity")
+        ax.set_xlabel(
+            "Position",
+            fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            labelpad=15,
+        )
+        ax.set_ylabel(
+            "Cosine Similarity",
+            fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+        )
 
         # Add segment length as subtitle instead of text in the plot
         if show_title:
@@ -154,21 +175,26 @@ class PositionSimilaritySinglePlotter:
             # Add language information if available
             if target_lang and source_lang:
                 title_text = (
-                    f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                    f"Lang.: [{target_lang}, {source_lang}, ..., {source_lang}]"
                 )
             elif source_lang:
-                title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+                title_text = f"Lang.: [{source_lang}, ..., {source_lang}]"
 
             if show_segment_lengths:
                 title_text += f"; SL:: {range_id}"
 
-            if current_title:
-                ax.set_title(f"{current_title}\n{title_text}", fontsize=11)
-            else:
-                ax.set_title(title_text, fontsize=11)
+            computed_title = (
+                f"{current_title}\n{title_text}" if current_title else title_text
+            )
+            ax.set_title(
+                computed_title,
+                fontsize=BASE_SUBPLOT_TITLE_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            )
 
         # Set x-axis ticks to be integers
         ax.set_xticks(positions)
+
+        ax.yaxis.set_major_locator(MultipleLocator(0.1))
 
         # Set y-axis limits if provided
         if ylim is not None:
@@ -187,6 +213,16 @@ class PositionSimilaritySinglePlotter:
         else:
             # Default formatting
             ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+        ax.tick_params(
+            axis="x",
+            labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            pad=POS_LABEL_PAD,
+        )
+        ax.tick_params(
+            axis="y",
+            labelleft=show_cosine_ticklabels,
+            labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+        )
 
         # Add token length bar chart on right y-axis if requested
         if show_lengths and "token_lengths" in results:
@@ -213,8 +249,20 @@ class PositionSimilaritySinglePlotter:
 
             # Format token length y-axis
             if show_token_ylabel:
-                ax2.set_ylabel("Token Length", color="gray")
-            ax2.tick_params(axis="y", labelcolor="gray")
+                ax2.set_ylabel(
+                    "Token Length",
+                    color="gray",
+                    fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                )
+            ax2.tick_params(
+                axis="y",
+                labelcolor="gray",
+                labelright=show_token_ticklabels,
+                labelleft=False,
+                labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            )
+            if not show_token_ticklabels:
+                ax2.set_ylabel("")
             ax2.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
 
             # Ensure main plot is in front
@@ -316,15 +364,18 @@ class DirectionalLeakageSinglePlotter:
                 # Add language information if available
                 if target_lang and source_lang:
                     title_text = (
-                        f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                        f"Lang.: [{target_lang}, {source_lang}, ..., {source_lang}]"
                     )
                 elif source_lang:
-                    title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+                    title_text = f"Lang.: [{source_lang}, ..., {source_lang}]"
 
                 if show_segment_lengths:
                     title_text += f"; SL:: {range_id}"
 
-                ax.set_title(title_text, fontsize=11)
+                ax.set_title(
+                    title_text,
+                    fontsize=BASE_SUBPLOT_TITLE_FONT_SIZE * SUBPLOT_FONT_SCALE,
+                )
             else:
                 # For single plots, show more detailed information
                 size_info = str(results["concat_size"])
@@ -349,12 +400,23 @@ class DirectionalLeakageSinglePlotter:
 
                 ax.set_title(
                     title_text,
-                    fontsize=9 if compact else 12,
+                    fontsize=(BASE_SUBPLOT_TITLE_FONT_SIZE + 1) * SUBPLOT_FONT_SCALE,
                 )
 
         # Always set axis labels, even in compact mode
-        ax.set_xlabel("Cosine Similarity")
-        ax.set_ylabel("Count")
+        ax.set_xlabel(
+            "Cosine Similarity",
+            fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+        )
+        ax.set_ylabel("Count", fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE)
+
+        ax.tick_params(
+            axis="x", labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE
+        )
+        ax.tick_params(
+            axis="y",
+            labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+        )
 
         # Add legend
         ax.legend(fontsize=8 if compact else 10)
@@ -530,8 +592,22 @@ class PositionalDirectionalLeakageSinglePlotter:
             )
 
         # Add labels
-        ax.set_xlabel("Position")
-        ax.set_ylabel("Cosine Similarity")
+        ax.set_xlabel(
+            "Position",
+            fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            labelpad=15,
+        )
+        ax.set_ylabel(
+            "Cosine Similarity",
+            fontsize=BASE_AXIS_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+        )
+        ax.tick_params(
+            axis="x", labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE
+        )
+        ax.tick_params(
+            axis="y",
+            labelsize=BASE_TICK_LABEL_FONT_SIZE * SUBPLOT_FONT_SCALE,
+        )
 
         # Set y-axis limits if provided
         if ylim:
@@ -561,10 +637,10 @@ class PositionalDirectionalLeakageSinglePlotter:
             # Add language information if available
             if target_lang and source_lang:
                 title_text = (
-                    f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                    f"Lang.: [{target_lang}, {source_lang}, ..., {source_lang}]"
                 )
             elif source_lang:
-                title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+                title_text = f"Lang.: [{source_lang}, ..., {source_lang}]"
             else:
                 title_text = "Position-wise Influence on Segment Contextualization"
 
@@ -572,10 +648,13 @@ class PositionalDirectionalLeakageSinglePlotter:
                 # Add range information as subtitle
                 title_text += f"; SL:: {range_id}"
 
-            if current_title:
-                ax.set_title(f"{current_title}\n{title_text}", fontsize=11)
-            else:
-                ax.set_title(title_text, fontsize=11)
+            computed_title = (
+                f"{current_title}\n{title_text}" if current_title else title_text
+            )
+            ax.set_title(
+                computed_title,
+                fontsize=BASE_SUBPLOT_TITLE_FONT_SIZE * SUBPLOT_FONT_SCALE,
+            )
 
         # Set integer x-axis ticks
         ax.set_xticks(positions)
@@ -662,12 +741,9 @@ class PositionalDirectionalLeakageHeatmapSinglePlotter:
         # Set ticks and labels
         ax.set_xticks(range(max_pos))
         ax.set_yticks(range(max_pos))
-        ax.set_xticklabels(
-            [f"P{i+1}" for i in range(max_pos)], fontsize=8 if compact else 10
-        )
-        ax.set_yticklabels(
-            [f"P{i+1}" for i in range(max_pos)], fontsize=8 if compact else 10
-        )
+        tick_fontsize = (8 if compact else 10) * SUBPLOT_FONT_SCALE
+        ax.set_xticklabels([f"P{i+1}" for i in range(max_pos)], fontsize=tick_fontsize)
+        ax.set_yticklabels([f"P{i+1}" for i in range(max_pos)], fontsize=tick_fontsize)
 
         # Add grid between cells
         ax.set_xticks(np.arange(-0.5, max_pos, 1), minor=True)
@@ -688,12 +764,15 @@ class PositionalDirectionalLeakageHeatmapSinglePlotter:
                         ha="center",
                         va="center",
                         color=text_color,
-                        fontsize=6 if compact else 8,
+                        fontsize=(6 if compact else 8) * SUBPLOT_FONT_SCALE,
                     )
 
         # Set labels
-        ax.set_xlabel("Target Position", fontsize=9 if compact else 11)
-        ax.set_ylabel("Source Position", fontsize=9 if compact else 11)
+        label_fontsize = (9 if compact else 11) * SUBPLOT_FONT_SCALE
+        ax.set_xlabel("Target Position", fontsize=label_fontsize)
+        ax.set_ylabel("Source Position", fontsize=label_fontsize)
+        ax.tick_params(axis="x", labelsize=tick_fontsize)
+        ax.tick_params(axis="y", labelsize=tick_fontsize)
 
         # Add title
         if show_title:
@@ -712,10 +791,10 @@ class PositionalDirectionalLeakageHeatmapSinglePlotter:
             # Add language information if available
             if target_lang and source_lang:
                 title_text = (
-                    f"Languages: [{target_lang}, {source_lang}, ..., {source_lang}]"
+                    f"Lang.: [{target_lang}, {source_lang}, ..., {source_lang}]"
                 )
             elif source_lang:
-                title_text = f"Languages: [{source_lang}, ..., {source_lang}]"
+                title_text = f"Lang.: [{source_lang}, ..., {source_lang}]"
             else:
                 title_text = "Position-wise Similarity Matrix"
 
@@ -723,7 +802,8 @@ class PositionalDirectionalLeakageHeatmapSinglePlotter:
                 # Add range information as subtitle
                 title_text += f"; SL:: {range_id}"
 
-            ax.set_title(title_text, fontsize=11 if compact else 13)
+            title_fontsize = (11 if compact else 13) * SUBPLOT_FONT_SCALE
+            ax.set_title(title_text, fontsize=title_fontsize)
 
         # Add legend text explaining the matrix layout
         legend_text = "Upper: Forward\nLower: Backward"
@@ -733,7 +813,7 @@ class PositionalDirectionalLeakageHeatmapSinglePlotter:
             legend_text,
             transform=ax.transAxes,
             verticalalignment="top",
-            fontsize=6 if compact else 8,
+            fontsize=(6 if compact else 8) * SUBPLOT_FONT_SCALE,
             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8),
         )
 
