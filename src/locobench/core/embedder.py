@@ -849,7 +849,7 @@ class TextEmbedder:
             assert input_ids.dim() == 2 and attention_mask.dim() == 2
             B, L = input_ids.shape
             assert attention_mask.shape == (B, L)
-            print(f"Processing batch of size {B} with sequence length {L}")
+            # print(f"Processing batch of size {B} with sequence length {L}")
 
             # Move if not using device_map; BaseEmbedder.get_model_outputs handles this as well
             if self._backend.device_map is None:
