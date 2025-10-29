@@ -1,8 +1,7 @@
 """
 Experiment Handler Module
 
-This module provides functionality for setting up and configuring local context
-benchmark experiments. It handles the creation of index lists for document
+This module provides functionality for setting up and configuring LoCoBench experiments. It handles the creation of index lists for document
 concatenation strategies and other experiment setup tasks.
 """
 
