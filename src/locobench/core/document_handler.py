@@ -2,7 +2,7 @@
 Document Handler Module
 
 This module provides functionality for loading, preprocessing, and managing documents
-for local context benchmark (LoCoBench) operations. It handles document loading from
+for LoCoBench operations. It handles document loading from
 various sources, tokenization, and preparation of documents for embedding models.
 """
 
