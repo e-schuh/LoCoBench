@@ -143,7 +143,7 @@ Use `src/locobench/scripts/create_parallel_indices.py` to pre-compute:
 
 Why this step?
 - It ensures the same document indices are used across runs and models.
-- You can constrain segment lengths in the source language and enforce similarity to target-language segment lengths.
+- You can constrain segment lengths in the base ("source") language and enforce similarity (e.g., length ratios) to non-base ("target") language segment lengths.
 - The script adjusts `sample_size` up to a multiple of `concat_size!` to balance permutations.
 
 Command:
@@ -232,8 +232,7 @@ Output:
 - Run names include model, dataset, mode, languages, and concat-size (and range suffixes when present).
 
 Reproducibility tips:
-- When using `indices_path`, concatenation indices are fixed from the file.
-- Legacy runs can also reuse indices via `reference_config_path`, but the indices-file workflow above is the recommended path.
+- When using `indices_path`, concatenation indices are fixed from the file to ensure semantic comparability across experiment instances.
 
 ### What this produces for the experiments
 
@@ -247,7 +246,7 @@ If you evaluate multiple models or language pairs, keep indices fixed and only s
 
 Attention calibration re-weights attention scores at inference time, with the goal of distributing representational capacity more evenly across the full sequence. The same config files still work with `run_all_configs.sh` because calibration options are handled by `compute_embeddings.py`.
 
-Keys (top-level apply to both embedders; you can also use per-embedder overrides):
+Keys (top-level apply to both embedders; you can also use per-embedder overrides, i.e., different settings for standalone embeddings and document embeddings):
 - `apply_attn_calibration` (bool): enable/disable calibration.
 - `calib_layers` (string): which layers contribute, e.g., `"last_half"`, `"last"`, `"all"`.
 - `calib_source_tokens` (string): token sources, e.g., `"cls"` or `"all"`.
@@ -433,9 +432,9 @@ Notes:
 
 ## Results analysis
 
-### Quantitative (numerical)
+### Quantitative
 
-After generating embeddings and/or running attention analyses, you can compute numerical metrics without plotting using helpers in `src/locobench/analysis/numerical_analysis.py`.
+After generating embeddings (Exp1 and Exp2), you can compute quantitative metrics using helpers in `src/locobench/analysis/numerical_analysis.py`. The notebook `notebooks/02_quant_results.ipynb` provides a worked example. Below is a summary of the steps involved.
 
 Step 1: Gather result paths for a model using the helper `categorize_paths_by_root`.
 
@@ -520,7 +519,7 @@ Notes:
 
 ### Qualitative (plots)
 
-For qualitative inspection and figures, use the multi-plotters in `src/locobench/visualizations/multi_plotter.py`. As with numerical analysis, start by collecting result paths via `categorize_paths_by_root` and pick pooling strategies per model.
+For qualitative inspection and figures, use the multi-plotters in `src/locobench/visualizations/multi_plotter.py`. The notebook `notebooks/01_plots.ipynb` provides a worked example. Below is a summary of the steps involved. As with numerical analysis, start by collecting result paths via `categorize_paths_by_root` and pick pooling strategies per model.
 
 ```python
 from locobench.analysis.numerical_analysis import categorize_paths_by_root
