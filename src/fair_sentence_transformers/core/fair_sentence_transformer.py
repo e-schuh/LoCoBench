@@ -47,6 +47,7 @@ class FairSentenceTransformer(SentenceTransformer):
     ATTENTION_PATHS: Dict[str, Union[str, Callable[[Any, int], Any]]] = {
         "Alibaba-NLP/gte-multilingual-base": "encoder.layer[{i}].attention.source.self__attention_0.source.nn_functional_softmax_0.output",
         "BAAI/bge-m3": "encoder.layer[{i}].attention.self.source.nn_functional_softmax_0.output",
+        "ibm-granite/granite-embedding-278m-multilingual": "encoder.layer[{i}].attention.self.source.nn_functional_softmax_0.output",
         "Qwen/Qwen3-Embedding-0.6B": "layers[{i}].self_attn.source.attention_interface_0.source.nn_functional_softmax_0.output",
         "Qwen/Qwen3-Embedding-4B": "layers[{i}].self_attn.source.attention_interface_0.source.nn_functional_softmax_0.output",
         "Qwen/Qwen3-Embedding-8B": "layers[{i}].self_attn.source.attention_interface_0.source.nn_functional_softmax_0.output",
