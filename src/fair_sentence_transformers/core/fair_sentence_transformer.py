@@ -40,7 +40,7 @@ class FairSentenceTransformer(SentenceTransformer):
         **kwargs: Additional arguments passed to SentenceTransformer.
     """
 
-    TESTED_MODELS: Tuple[str, ...] = ("Alibaba-NLP/gte-multilingual-base",)
+    TESTED_MODELS: Tuple[str, ...] = ("Alibaba-NLP/gte-multilingual-base","BAAI/bge-m3", "ibm-granite/granite-embedding-278m-multilingual", "ibm-granite/granite-embedding-107m-multilingual", "Qwen/Qwen3-Embedding-0.6B", "Qwen/Qwen3-Embedding-4B", "Qwen/Qwen3-Embedding-8B")
 
     DECODER_ARCH_NAMES: Set[str] = {"qwen", "llama", "gpt", "mistral", "falcon"}
 
@@ -48,6 +48,7 @@ class FairSentenceTransformer(SentenceTransformer):
         "Alibaba-NLP/gte-multilingual-base": "encoder.layer[{i}].attention.source.self__attention_0.source.nn_functional_softmax_0.output",
         "BAAI/bge-m3": "encoder.layer[{i}].attention.self.source.nn_functional_softmax_0.output",
         "ibm-granite/granite-embedding-278m-multilingual": "encoder.layer[{i}].attention.self.source.nn_functional_softmax_0.output",
+        "ibm-granite/granite-embedding-107m-multilingual": "encoder.layer[{i}].attention.self.source.nn_functional_softmax_0.output",
         "Qwen/Qwen3-Embedding-0.6B": "layers[{i}].self_attn.source.attention_interface_0.source.nn_functional_softmax_0.output",
         "Qwen/Qwen3-Embedding-4B": "layers[{i}].self_attn.source.attention_interface_0.source.nn_functional_softmax_0.output",
         "Qwen/Qwen3-Embedding-8B": "layers[{i}].self_attn.source.attention_interface_0.source.nn_functional_softmax_0.output",
