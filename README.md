@@ -73,6 +73,7 @@ pip install coming soon
 **Tested Models:**
 - [Alibaba-NLP/gte-multilingual-base](https://huggingface.co/Alibaba-NLP/gte-multilingual-base)
 - [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3)
+- [ibm-granite/granite-embedding-278m-multilingual](https://huggingface.co/ibm-granite/granite-embedding-278m-multilingual), [107M version](ibm-granite/granite-embedding-107m-multilingual)
 - Qwen3-Embedding Family: [0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B), [4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B), [8B](https://huggingface.co/Qwen/Qwen3-Embedding-8B)
 
 **Extensibility:** Our implementation can support additional models with a configuration and quick test of new additions. Feel free put a pull request with your favourite model.
