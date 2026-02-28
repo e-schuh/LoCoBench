@@ -2,7 +2,7 @@
 name = "fair_sentence_transformers"
 version = "0.1.0"
 description = "A workbench and Benchmarking framework for Long-Context text embedding models and their positional biases"
-authors = ["Elias Schuhmacher <eliassebastian.schuhmacher@uzh.ch>"]
+authors = ["Elias Schuhmacher <eliassebastian.schuhmacher@uzh.ch>", "Andrianos Michail <andrianos.michail@cl.uzh.ch"]
 readme = "README.md"
 packages = [{include = "fair_sentence_transformers", from = "src"}]
 
