@@ -122,12 +122,22 @@ class FairSentenceTransformer(SentenceTransformer):
 
         self._nnsight_model: Optional[nnsight.NNsight] = None
         self._num_layers: Optional[int] = None
+
+        # Default calibration parameters (computed once).
+        total_layers = int(self._config.num_hidden_layers)
+        self._default_calib_basket_size: int = 128
+        self._default_calib_layers: int = max(1, total_layers // 2)
+        self._default_calib_strength: float = 0.5
+
         print(
             "Summary of TextEmbedder configuration:"
             f"\n  Model: {model_name_or_path}"
             f"\n  Padding side: {self.padding_side}"
             f"\n  Pooling strategy: {self.pooling_strategy}"
             f"\n  Calibrated token(s): {self.calib_source_mode}"
+            f"\n  Default calib_basket_size: {self._default_calib_basket_size}"
+            f"\n  Default calib_layers: {self._default_calib_layers}"
+            f"\n  Default calib_strength: {self._default_calib_strength}"
         )
 
     def _detect_padding_side(self) -> Literal["left", "right"]:
@@ -509,9 +519,9 @@ class FairSentenceTransformer(SentenceTransformer):
         self,
         sentences: Union[str, List[str]],
         *,
-        calib_basket_size: int,
-        calib_layers: int,
-        calib_strength: float,
+        calib_basket_size: Optional[int] = None,
+        calib_layers: Optional[int] = None,
+        calib_strength: Optional[float] = None,
         isolate_bos: Optional[bool] = None,
         isolate_eos: Optional[bool] = None,
         bos_weight: Union[float, Literal["equal"]] = "equal",
@@ -537,10 +547,12 @@ class FairSentenceTransformer(SentenceTransformer):
             sentences: Single sentence string or list of sentences to encode.
             calib_basket_size: Number of consecutive content tokens per basket. Larger values
                 create coarser calibration; smaller values provide finer-grained fairness.
+                Defaults to 128 (set during __init__).
             calib_layers: Number of final transformer layers to apply calibration to.
                 E.g., calib_layers=3 calibrates the last 3 layers.
+                Defaults to 50% of the model's layers (set during __init__).
             calib_strength: Interpolation factor between calibrated (1.0) and original (0.0)
-                attention. Value in [0, 1].
+                attention. Value in [0, 1]. Defaults to 0.5 (set during __init__).
             isolate_bos: Whether to treat BOS token as its own basket. If None, inferred
                 from pooling strategy (True for cls/last pooling, False for mean).
             isolate_eos: Whether to treat EOS token as its own basket. If None, inferred
@@ -559,6 +571,14 @@ class FairSentenceTransformer(SentenceTransformer):
         Returns:
             Embeddings with shape (n_sentences, embedding_dim) as numpy array or torch.Tensor.
         """
+        # Apply defaults computed in __init__ for any unspecified calibration params.
+        if calib_basket_size is None:
+            calib_basket_size = self._default_calib_basket_size
+        if calib_layers is None:
+            calib_layers = self._default_calib_layers
+        if calib_strength is None:
+            calib_strength = self._default_calib_strength
+
         assert calib_basket_size > 0
         assert calib_layers > 0
         assert 0.0 <= calib_strength <= 1.0
