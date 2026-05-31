@@ -4,7 +4,7 @@
 
 ## Overview
 
-This repository accompanies our [preprint(under review)](https://arxiv.org/abs/2601.16934) with source code for the examination of positional bias in long documents of multilingual embedding models and the fair-sentence-transformers extension.
+This repository accompanies our [preprint(accepted to ACL2026 findings)](https://arxiv.org/abs/2601.16934) with source code for the examination of positional bias in long documents of multilingual embedding models and the fair-sentence-transformers extension.
 
 ---
 
