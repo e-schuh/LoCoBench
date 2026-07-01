@@ -1,10 +1,11 @@
-# [Information Representation Fairness in Long-Document Embeddings: The Peculiar Interaction of Positional and Language Bias](https://arxiv.org/abs/2601.16934) - FairSentenceTransformers and Replication ![License: AGPLV3+](https://img.shields.io/badge/License-AGPLV3+-brightgreen.svg) 
+# [Information Representation Fairness in Long-Document Embeddings: The Peculiar Interaction of Positional and Language Bias](https://arxiv.org/abs/2601.16934) - FairSentenceTransformers, Replication and Extension to Information Retrieval ![License: AGPLV3+](https://img.shields.io/badge/License-AGPLV3+-brightgreen.svg) 
 
 ---
 
 ## Overview
 
-This repository accompanies our [preprint(accepted to ACL2026 findings)](https://arxiv.org/abs/2601.16934) with source code for the examination of positional bias in long documents of multilingual embedding models and the fair-sentence-transformers extension.
+- **ACL 2026(findings)** — [*Information Representation Fairness in Long-Document Embeddings: The Peculiar Interaction of Positional and Language Bias*](https://aclanthology.org/2026.findings-acl.246/) - source code for the examination of positional bias in long documents of multilingual embedding models.
+- **Preprint** — [*Attention Calibration for Position-Fair Dense Information Retrieval*](https://arxiv.org/abs/2606.02737) — extends the positional bias mitigation to downstream Information Retrieval Scenarios through the FairSentenceTransformers library.
 
 ---
 
@@ -87,17 +88,45 @@ To fully replicate our results, please follow the instructions decipited in our 
 
 ## Citation
 
-If you use these resources, please cite our preprint:
+If you use these resources, please cite our relevant works:
+
+Positional and Language Bias, Attention Calibration (ACL2026):
 
 ```bibtex
-@misc{schuhmacher2026informationrepresentationfairnesslongdocument,
-      title={Information Representation Fairness in Long-Document Embeddings: The Peculiar Interaction of Positional and Language Bias}, 
-      author={Elias Schuhmacher and Andrianos Michail and Juri Opitz and Rico Sennrich and Simon Clematide},
+@inproceedings{schuhmacher-etal-2026-information,
+    title = "Information Representation Fairness in Long-Document Embeddings: The Peculiar Interaction of Positional and Language Bias",
+    author = "Schuhmacher, Elias  and
+      Michail, Andrianos  and
+      Opitz, Juri  and
+      Sennrich, Rico  and
+      Clematide, Simon",
+    editor = "Liakata, Maria  and
+      Moreira, Viviane P.  and
+      Zhang, Jiajun  and
+      Jurgens, David",
+    booktitle = "Findings of the {A}ssociation for {C}omputational {L}inguistics: {ACL} 2026",
+    month = jul,
+    year = "2026",
+    address = "San Diego, California, United States",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2026.findings-acl.246/",
+    pages = "4996--5028",
+    ISBN = "979-8-89176-395-1",
+    abstract = "To be discoverable in an embedding-based search process, each part of a document should be reflected in its embedding representation. To quantify any potential reflection biases, we introduce a permutation-based evaluation framework. With this, we observe that state-of-the-art embedding models exhibit systematic positional and language biases when documents are longer and consist of multiple segments. Specifically, early segments and segments in higher-resource languages like English are over-represented, while later segments and segments in lower-resource languages are marginalized. In our further analysis, we find that the positional bias stems from front-loaded attention distributions in pooling-token embeddings, where early tokens receive more attention. To mitigate this issue, we introduce an inference-time attention calibration method that redistributes attention more evenly across document positions, increasing discoverabiltiy of later segments. Our evaluation framework and attention calibration is available at https://github.com/impresso/fair-sentence-transformers"
+}
+```
+
+Attention Calibration for Information Retrieval (preprint):
+
+```bibtex
+@misc{michail2026attentioncalibrationpositionfairdense,
+      title={Attention Calibration for Position-Fair Dense Information Retrieval}, 
+      author={Andrianos Michail and Elias Schuhmacher and Juri Opitz and Simon Clematide and Rico Sennrich},
       year={2026},
-      eprint={2601.16934},
+      eprint={2606.02737},
       archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2601.16934}, 
+      primaryClass={cs.IR},
+      url={https://arxiv.org/abs/2606.02737}, 
 }
 ```
 
