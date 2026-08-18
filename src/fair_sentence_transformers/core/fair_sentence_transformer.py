@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from dataclasses import dataclass, field
 from transformers import AutoModel, AutoConfig
 from typing import List, Dict, Union, Literal, Optional, Any, Tuple, Callable, Set
 import tqdm
@@ -9,6 +10,51 @@ import numpy as np
 import warnings
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.models import Pooling
+
+
+@dataclass
+class _CalibDeviceTensors:
+    """Small per-(device, dtype) tensors, broadcastable against (B, H, R, K)."""
+
+    valid_mask: torch.Tensor              # (B, 1, 1, K), attn dtype
+    recip_total: torch.Tensor             # (B, 1, 1, 1) = 1 / n_total_baskets
+    q_mask: torch.Tensor                  # (B, Q) bool
+    batch_index: torch.Tensor             # (B,) long
+    pool_index: Optional[torch.Tensor]    # (B,) long
+    bos_index: Optional[torch.Tensor]     # (B,) long
+    eos_index: Optional[torch.Tensor]
+    bos_share: Optional[torch.Tensor]     # (B, 1, 1, 1)
+    eos_share: Optional[torch.Tensor]
+    content_budget: Optional[torch.Tensor]  # (B, 1, 1, 1) = 1 - assigned shares
+
+
+@dataclass
+class CalibPlan:
+    """Batch geometry for calibration.
+
+    Device- and dtype-independent, so one plan is reused across every
+    calibrated layer of a batch.
+    """
+
+    source_mode: str
+    basket_size: int
+    isolate_bos: bool
+    isolate_eos: bool
+    bos_weight: Union[float, Literal["equal", "original"]]
+    eos_weight: Union[float, Literal["equal", "original"]]
+    valid_mask: torch.Tensor              # (B, K) bool, host
+    n_total: torch.Tensor                 # (B,) long, host
+    bos_pos: Optional[List[int]]
+    eos_pos: Optional[List[int]]
+    content_start: List[int]
+    content_len: List[int]
+    max_baskets: int
+    pool_pos: Optional[List[int]]
+    pool_pos_const: Optional[int]         # set when every item pools the same row
+    rescale_content: bool
+    _cache: Dict[Tuple, _CalibDeviceTensors] = field(
+        default_factory=dict, repr=False
+    )
 
 
 class FairSentenceTransformer(SentenceTransformer):
@@ -266,201 +312,320 @@ class FairSentenceTransformer(SentenceTransformer):
         ), f"Attention mask must be {self.padding_side}-padded"
         return expected.to(dtype=torch.bool), start_idx, valid_len.to(torch.long)
 
-    def _calibrate_attention(
+    def _build_calib_plan(
         self,
-        attn: torch.Tensor,
         attention_mask: torch.Tensor,
         basket_size: int,
-        strength: float,
         isolate_bos: bool,
         isolate_eos: bool,
-        bos_weight: Union[float, Literal["equal"]],
-        eos_weight: Union[float, Literal["equal"]],
-    ) -> torch.Tensor:
-        attention_mask = attention_mask.to(attn.device)
-        assert attn.dim() == 4, f"Expected attention 4D, got {attn.shape}"
-        B, H, Q, K = attn.shape
-        assert attention_mask.shape == (B, K)
-        assert Q == K, "Self-attention expected (Q==K)"
+        bos_weight: Union[float, Literal["equal", "original"]],
+        eos_weight: Union[float, Literal["equal", "original"]],
+    ) -> CalibPlan:
+        """Build the reusable batch geometry.
+
+        Reads `attention_mask` on the host, so call this once per batch and
+        outside the nnsight trace, never on a proxy.
+        """
         assert basket_size > 0
+        assert attention_mask.dim() == 2
+        for w in (bos_weight, eos_weight):
+            assert w in ("equal", "original") or (
+                isinstance(w, (int, float)) and 0.0 <= w <= 1.0
+            ), (
+                "weight must be a float in [0, 1], 'equal' or 'original', "
+                f"got {w!r}"
+            )
+
         valid_mask, start_idx, valid_len = self._validate_padding_mask(attention_mask)
         assert torch.all(valid_len > 0)
-        valid_mask = valid_mask.to(device=attn.device)
-        start_idx = start_idx.to(device=attn.device)
-        valid_len = valid_len.to(device=attn.device)
 
+        S = int(basket_size)
         n_isolated = int(isolate_bos) + int(isolate_eos)
         content_len = valid_len - n_isolated
         assert torch.all(
             content_len > 0
         ), "content_len must be > 0 after isolating BOS/EOS"
 
+        end_idx = start_idx + valid_len - 1
+        content_start = start_idx + int(isolate_bos)
+        n_baskets = (content_len + S - 1) // S
+        n_total = n_baskets + n_isolated
+
+        assigned = sum(
+            float(w)
+            for iso, w in ((isolate_bos, bos_weight), (isolate_eos, eos_weight))
+            if iso and isinstance(w, (int, float))
+        )
+        assert assigned < 1.0, "isolated token weights must leave mass for content"
+
         source_mode = self.calib_source_mode
         if source_mode == "cls":
-            pool_pos = start_idx
-            q_mask = torch.zeros((B, Q), device=attn.device, dtype=torch.bool)
-            q_mask[torch.arange(B, device=attn.device), pool_pos] = True
-        elif source_mode == "all":
-            q_mask = valid_mask
+            pool = start_idx
         elif source_mode == "last":
-            pool_pos = start_idx + valid_len - 1
-            q_mask = torch.zeros((B, Q), device=attn.device, dtype=torch.bool)
-            q_mask[torch.arange(B, device=attn.device), pool_pos] = True
+            pool = end_idx
+        elif source_mode == "all":
+            pool = None
         else:
             raise AssertionError(f"Unsupported source_mode: {source_mode}")
-        q_mask_b = q_mask.view(B, 1, Q, 1)
 
-        S = int(basket_size)
-        pos = torch.arange(K, device=attn.device).view(1, 1, 1, K)
-        start_idx_b = start_idx.view(B, 1, 1, 1)
-        end_idx_b = (start_idx + valid_len - 1).view(B, 1, 1, 1)
-        bos_pos_b = start_idx_b
-        eos_pos_b = end_idx_b
+        # One host sync per batch, rather than one per calibrated layer.
+        pool_list = pool.tolist() if pool is not None else None
+        const = (
+            pool_list[0]
+            if pool_list is not None and len(set(pool_list)) == 1
+            else None
+        )
 
-        is_bos = pos == bos_pos_b
-        is_eos = pos == eos_pos_b
+        return CalibPlan(
+            source_mode=source_mode,
+            basket_size=S,
+            isolate_bos=isolate_bos,
+            isolate_eos=isolate_eos,
+            bos_weight=bos_weight,
+            eos_weight=eos_weight,
+            valid_mask=valid_mask,
+            n_total=n_total,
+            bos_pos=start_idx.tolist() if isolate_bos else None,
+            eos_pos=end_idx.tolist() if isolate_eos else None,
+            content_start=content_start.tolist(),
+            content_len=content_len.tolist(),
+            max_baskets=int(n_baskets.max().item()),
+            pool_pos=pool_list,
+            pool_pos_const=const,
+            rescale_content=(
+                (isolate_bos and bos_weight != "equal")
+                or (isolate_eos and eos_weight != "equal")
+            ),
+        )
 
-        content_offset = int(isolate_bos)
-        if isolate_bos:
-            content_start_b = start_idx_b + 1
+    @staticmethod
+    def _calib_device_tensors(
+        plan: CalibPlan, device: Any, dtype: torch.dtype
+    ) -> _CalibDeviceTensors:
+        """Materialise the plan for one device and dtype, cached.
+
+        Deriving both from `attn` rather than from the plan keeps this correct
+        under `device_map` sharding, where layers live on different devices.
+        """
+        key = (str(device), dtype)
+        cached = plan._cache.get(key)
+        if cached is not None:
+            return cached
+
+        B = plan.valid_mask.size(0)
+        valid = plan.valid_mask.to(device)
+        n_total_f = plan.n_total.to(device=device, dtype=dtype).view(B, 1, 1, 1)
+
+        def share(w: Union[float, Literal["equal", "original"]]):
+            if w == "equal":
+                return 1.0 / n_total_f
+            if w == "original":
+                return None      # depends on attention values, resolved per block
+            return torch.full_like(n_total_f, float(w))
+
+        def index(pos: Optional[List[int]]) -> Optional[torch.Tensor]:
+            if pos is None:
+                return None
+            return torch.tensor(pos, device=device, dtype=torch.long)
+
+        bos_share = share(plan.bos_weight) if plan.isolate_bos else None
+        eos_share = share(plan.eos_weight) if plan.isolate_eos else None
+
+        # Only precomputable when no share depends on the attention values.
+        uses_original = (plan.isolate_bos and plan.bos_weight == "original") or (
+            plan.isolate_eos and plan.eos_weight == "original"
+        )
+        budget = None
+        if plan.rescale_content and not uses_original:
+            assigned = torch.zeros_like(n_total_f)
+            if bos_share is not None:
+                assigned = assigned + bos_share
+            if eos_share is not None:
+                assigned = assigned + eos_share
+            budget = 1.0 - assigned
+
+        pool_index = index(plan.pool_pos)
+        if pool_index is None:
+            q_mask = valid
         else:
-            content_start_b = start_idx_b
-        content_rel = (pos - content_start_b).clamp_min(0)
+            q_mask = torch.zeros_like(valid)
+            q_mask[torch.arange(B, device=device), pool_index] = True
 
-        n_content_baskets = ((content_len + S - 1) // S).to(dtype=torch.long)
-        max_content_baskets = int(n_content_baskets.max().item())
-        n_total_baskets = n_content_baskets + n_isolated
-        max_total_baskets = max_content_baskets + n_isolated
-
-        content_basket_ids = content_offset + (content_rel // S)
-        content_basket_ids = content_basket_ids.clamp_max(
-            content_offset + max_content_baskets - 1
+        mat = _CalibDeviceTensors(
+            valid_mask=valid.view(B, 1, 1, -1).to(dtype),
+            recip_total=1.0 / n_total_f,
+            q_mask=q_mask,
+            batch_index=torch.arange(B, device=device),
+            pool_index=pool_index,
+            bos_index=index(plan.bos_pos),
+            eos_index=index(plan.eos_pos),
+            bos_share=bos_share,
+            eos_share=eos_share,
+            content_budget=budget,
         )
+        plan._cache[key] = mat
+        return mat
 
-        basket_ids = content_basket_ids.clone()
-        if isolate_bos:
-            basket_ids = torch.where(is_bos, torch.zeros_like(basket_ids), basket_ids)
-        if isolate_eos:
-            eos_basket_id = (content_offset + n_content_baskets.view(B, 1, 1, 1)).to(
-                basket_ids.dtype
+    @staticmethod
+    def _calibrate_block(
+        block: torch.Tensor,
+        plan: CalibPlan,
+        mat: _CalibDeviceTensors,
+        check_sel: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """block: (B, H, R, K) copy of the rows to calibrate. Returns a new tensor."""
+        B, H, R, K = block.shape
+        S = plan.basket_size
+        P = plan.max_baskets * S
+
+        # Align each item's contiguous content span to column 0. This drops
+        # padding and isolated tokens and lines the basket grid up in one move.
+        # The loop is needed because content_start varies per item under left
+        # padding.
+        bi = mat.batch_index
+
+        def share(weight, precomputed, index):
+            """(B, 1, 1, 1) for a fixed share, (B, H, R, 1) for "original"."""
+            if index is None:
+                return None
+            if weight == "original":
+                # Mass the uncalibrated row already put on this token. Reading
+                # it from `block` costs one (B, H, R) gather, no full-size copy.
+                return block[bi, :, :, index].unsqueeze(-1)
+            return precomputed
+
+        bos_share = share(plan.bos_weight, mat.bos_share, mat.bos_index)
+        eos_share = share(plan.eos_weight, mat.eos_share, mat.eos_index)
+
+        aligned = block.new_zeros((B, H, R, P))
+        for b in range(B):
+            c0, L = plan.content_start[b], plan.content_len[b]
+            aligned[b, :, :, :L] = block[b, :, :, c0 : c0 + L]
+
+        # Baskets are contiguous blocks of S, so a reshape replaces
+        # scatter_add/gather. No int64 index tensor is built.
+        view = aligned.view(B, H, R, plan.max_baskets, S)
+        sums = view.sum(dim=-1, keepdim=True)
+        # Attention is non-negative, so a zero basket sum implies a zero
+        # numerator. Filling the divisor with 1 reproduces where(denom > 0, ...).
+        sums.masked_fill_(sums == 0, 1.0)
+        view.div_(sums)
+        aligned.mul_(mat.recip_total)
+
+        if plan.rescale_content:
+            budget = mat.content_budget
+            if budget is None:
+                assigned = torch.zeros_like(block[:, :1, :, :1])
+                for sh in (bos_share, eos_share):
+                    if sh is not None:
+                        assigned = assigned + sh
+                budget = (1.0 - assigned).clamp_min(0.0)
+            content_sum = aligned.sum(dim=-1, keepdim=True)
+            scale = torch.where(
+                content_sum > 0,
+                budget / content_sum,
+                torch.ones_like(content_sum),
             )
-            basket_ids = torch.where(is_eos, eos_basket_id, basket_ids)
+            aligned.mul_(scale)
 
-        basket_ids = basket_ids.expand(B, H, Q, K)
-        assert basket_ids.shape == (B, H, Q, K)
+        out = torch.zeros_like(block)
+        for b in range(B):
+            c0, L = plan.content_start[b], plan.content_len[b]
+            out[b, :, :, c0 : c0 + L] = aligned[b, :, :, :L]
+        del aligned
 
-        mask_bk = valid_mask.view(B, 1, 1, K).to(dtype=attn.dtype)
-        attn_masked = attn * mask_bk
+        # squeeze(-1) leaves (B, 1, 1) for a fixed share and (B, H, R) for
+        # "original"; both broadcast against the (B, H, R) indexed slice.
+        if bos_share is not None:
+            out[bi, :, :, mat.bos_index] += bos_share.squeeze(-1)
+        if eos_share is not None:
+            out[bi, :, :, mat.eos_index] += eos_share.squeeze(-1)
 
-        is_content = (
-            valid_mask.view(B, 1, 1, K)
-            & ~(is_bos if isolate_bos else torch.zeros_like(is_bos))
-            & ~(is_eos if isolate_eos else torch.zeros_like(is_eos))
+        row_sum = out.sum(dim=-1, keepdim=True)
+        if check_sel is not None:
+            assert torch.all(
+                row_sum.masked_select(check_sel) > 0
+            ), "Calibrated rows must sum to > 0"
+        row_sum.masked_fill_(row_sum == 0, 1.0)
+        out.div_(row_sum)
+        return out
+
+    def _calibrate_attention_inplace(
+        self,
+        attn: torch.Tensor,
+        plan: CalibPlan,
+        strength: float,
+        tile: int = 256,
+        zero_padded_keys: bool = True,
+        check_rows: bool = True,
+    ) -> None:
+        """Redistribute attention across baskets, editing `attn` in place.
+
+        `attn` has shape (B, H, Q, K). For "cls" and "last" only one query row
+        per batch item changes, so the working set is (B, H, K); for "all" the
+        query axis is processed in tiles of `tile` rows.
+
+        zero_padded_keys: zero the padded key columns of every row. Softmax
+            already drives those to exactly 0 except on query rows where every
+            key is masked, which occur with causal attention plus left padding;
+            there softmax renormalises over the padded keys instead. Those rows
+            sit at padding positions and their outputs are discarded by every
+            pooling strategy, but the flag costs one in-place pass and no
+            allocation.
+        check_rows: keep the assertion that calibrated rows sum to > 0. Costs
+            one host sync per call.
+        """
+        assert attn.dim() == 4, f"Expected attention 4D, got {tuple(attn.shape)}"
+        B, H, Q, K = attn.shape
+        assert Q == K, "Self-attention expected (Q == K)"
+        assert plan.valid_mask.shape == (B, K), (
+            f"plan built for {tuple(plan.valid_mask.shape)}, got batch {(B, K)}"
         )
-        is_content = is_content.to(dtype=attn.dtype)
+        assert 0.0 <= strength <= 1.0
+        assert tile > 0
 
-        bucket_sums = torch.zeros(
-            (B, H, Q, max_total_baskets), device=attn.device, dtype=attn.dtype
-        )
-        content_attn = attn_masked * is_content
-        bucket_sums = bucket_sums.scatter_add(
-            dim=-1, index=basket_ids.to(torch.long), src=content_attn
-        )
-        denom = bucket_sums.gather(dim=-1, index=basket_ids.to(torch.long))
+        mat = self._calib_device_tensors(plan, attn.device, attn.dtype)
+        # Must precede the row copies below: `finish` blends against the masked
+        # attention, so `orig` has to be captured after this multiply.
+        if zero_padded_keys:
+            attn.mul_(mat.valid_mask)
 
-        n_content_baskets_f = n_content_baskets.to(dtype=attn.dtype).view(B, 1, 1, 1)
-        n_total_baskets_f = n_total_baskets.to(dtype=attn.dtype).view(B, 1, 1, 1)
+        def finish(out: torch.Tensor, orig: torch.Tensor) -> torch.Tensor:
+            if strength != 1.0:
+                out.mul_(strength).add_(orig, alpha=1.0 - strength)
+            return out.mul_(mat.valid_mask)
 
-        calibrated = torch.where(
-            denom > 0,
-            (content_attn / denom) * (1.0 / n_total_baskets_f),
-            torch.zeros_like(content_attn),
-        )
-
-        bos_attn_value = (
-            (attn_masked * is_bos.to(attn.dtype)).sum(dim=-1, keepdim=True)
-            if isolate_bos
-            else None
-        )
-        eos_attn_value = (
-            (attn_masked * is_eos.to(attn.dtype)).sum(dim=-1, keepdim=True)
-            if isolate_eos
-            else None
-        )
-
-        if isolate_bos:
-            if bos_weight == "equal":
-                calibrated = calibrated + torch.where(
-                    is_bos,
-                    torch.ones_like(attn_masked) / n_total_baskets_f,
-                    torch.zeros_like(attn_masked),
-                )
+        if plan.pool_pos is not None:
+            # One query row per item changes; every other row is left untouched.
+            # `orig` is a copy, not a view, and `_calibrate_block` does not
+            # mutate it, so the strength blend still sees the pre-edit values.
+            # The write into `attn` is the last step.
+            if plan.pool_pos_const is not None:
+                p = plan.pool_pos_const
+                orig = attn[:, :, p : p + 1, :].clone()
             else:
-                assert isinstance(bos_weight, (int, float)) and 0.0 <= bos_weight <= 1.0
-                calibrated = calibrated + bos_weight * attn_masked * is_bos.to(
-                    attn.dtype
-                )
-
-        if isolate_eos:
-            if eos_weight == "equal":
-                calibrated = calibrated + torch.where(
-                    is_eos,
-                    torch.ones_like(attn_masked) / n_total_baskets_f,
-                    torch.zeros_like(attn_masked),
-                )
+                orig = attn[mat.batch_index, :, mat.pool_index, :].unsqueeze(2)
+            sel = (
+                torch.ones_like(orig[:, :1, :, :1], dtype=torch.bool)
+                if check_rows
+                else None
+            )
+            out = finish(self._calibrate_block(orig, plan, mat, sel), orig)
+            if plan.pool_pos_const is not None:
+                attn[:, :, plan.pool_pos_const : plan.pool_pos_const + 1, :] = out
             else:
-                assert isinstance(eos_weight, (int, float)) and 0.0 <= eos_weight <= 1.0
-                calibrated = calibrated + eos_weight * attn_masked * is_eos.to(
-                    attn.dtype
-                )
+                attn[mat.batch_index, :, mat.pool_index, :] = out.squeeze(2)
+            return
 
-        bos_uses_float = isolate_bos and isinstance(bos_weight, (int, float))
-        eos_uses_float = isolate_eos and isinstance(eos_weight, (int, float))
-        if bos_uses_float or eos_uses_float:
-            bos_final = (
-                float(bos_weight) * bos_attn_value
-                if bos_uses_float
-                else bos_attn_value / n_total_baskets_f
-            )
-            eos_final = (
-                float(eos_weight) * eos_attn_value
-                if eos_uses_float
-                else eos_attn_value / n_total_baskets_f
-            )
-            remaining_for_content = 1.0 - bos_final - eos_final
-            current_content_sum = (
-                calibrated.sum(dim=-1, keepdim=True) - bos_final - eos_final
-            )
-            content_scale = torch.where(
-                current_content_sum > 0,
-                remaining_for_content / current_content_sum,
-                torch.ones_like(current_content_sum),
-            )
-            calibrated = torch.where(
-                is_content.bool(),
-                calibrated * content_scale,
-                calibrated,
-            )
-
-        calibrated = calibrated * mask_bk
-
-        row_sum = calibrated.sum(dim=-1, keepdim=True)
-        row_sum_squeezed = row_sum.squeeze(-1)
-        must_be_pos = q_mask.view(B, 1, Q).expand(B, H, Q)
-        assert torch.all(
-            row_sum_squeezed[must_be_pos] > 0
-        ), "Calibrated rows must sum to >0"
-
-        denom_rows = torch.where(q_mask_b, row_sum, torch.ones_like(row_sum))
-        normalized = torch.where(q_mask_b, calibrated / denom_rows, attn_masked)
-
-        if strength == 1.0:
-            return normalized
-        return torch.where(
-            q_mask_b,
-            normalized * strength + attn_masked * (1.0 - strength),
-            attn_masked,
-        )
+        for q0 in range(0, Q, tile):
+            q1 = min(q0 + tile, Q)
+            # Safe to write tiles back as we go: each output row depends only
+            # on the same input row, never on other query rows.
+            orig = attn[:, :, q0:q1, :].clone()
+            sel = mat.q_mask[:, q0:q1].view(B, 1, q1 - q0, 1)
+            # Only rows the calibration selects; the rest keep their values.
+            out = self._calibrate_block(orig, plan, mat, sel if check_rows else None)
+            attn[:, :, q0:q1, :] = torch.where(sel, finish(out, orig), orig)
 
     def _extract_last_hidden_state(self, model_output: Any) -> torch.Tensor:
         if hasattr(model_output, "last_hidden_state"):
@@ -525,8 +690,8 @@ class FairSentenceTransformer(SentenceTransformer):
         calib_strength: Optional[float] = None,
         isolate_bos: Optional[bool] = None,
         isolate_eos: Optional[bool] = None,
-        bos_weight: Union[float, Literal["equal"]] = "equal",
-        eos_weight: Union[float, Literal["equal"]] = "equal",
+        bos_weight: Union[float, Literal["equal", "original"]] = "original",
+        eos_weight: Union[float, Literal["equal", "original"]] = "equal",
         batch_size: int = 32,
         show_progress_bar: bool = False,
         normalize_embeddings: bool = True,
@@ -558,9 +723,14 @@ class FairSentenceTransformer(SentenceTransformer):
                 from pooling strategy (True for cls/last pooling, False for mean).
             isolate_eos: Whether to treat EOS token as its own basket. If None, inferred
                 from pooling strategy (True for last pooling, False otherwise).
-            bos_weight: Weight for BOS token attention. Either "equal" (same as content
-                baskets, i.e., 1/n_baskets) or a float in [0, 1] for fixed proportion.
-            eos_weight: Weight for EOS token attention. Either "equal" or float in [0, 1].
+            bos_weight: Share of the attention row assigned to the BOS token. One of
+                "equal" (1/n_baskets, the same as a content basket), "original"
+                (whatever mass the uncalibrated attention already gave the token,
+                so BOS is left alone and only content positions are rebalanced),
+                or a float in [0, 1] giving a fixed share. Content baskets split
+                the remainder equally. Ignored when isolate_bos is False.
+            eos_weight: Share assigned to the EOS token, same semantics as bos_weight.
+                Ignored when isolate_eos is False.
             batch_size: Number of sentences to process simultaneously.
             show_progress_bar: Whether to display a tqdm progress bar during encoding.
             normalize_embeddings: Whether to L2-normalize the output embeddings.
@@ -591,15 +761,22 @@ class FairSentenceTransformer(SentenceTransformer):
         if isinstance(bos_weight, (int, float)):
             assert 0.0 <= bos_weight <= 1.0, "bos_weight must be in [0, 1]"
         else:
-            assert (
-                bos_weight == "equal"
-            ), f"bos_weight must be float or 'equal', got {bos_weight}"
+            assert bos_weight in ("equal", "original"), (
+                f"bos_weight must be float, 'equal' or 'original', got {bos_weight}"
+            )
         if isinstance(eos_weight, (int, float)):
             assert 0.0 <= eos_weight <= 1.0, "eos_weight must be in [0, 1]"
         else:
-            assert (
-                eos_weight == "equal"
-            ), f"eos_weight must be float or 'equal', got {eos_weight}"
+            assert eos_weight in ("equal", "original"), (
+                f"eos_weight must be float, 'equal' or 'original', got {eos_weight}"
+            )
+
+        float_share = sum(
+            float(w)
+            for w, iso in ((bos_weight, resolved_bos), (eos_weight, resolved_eos))
+            if iso and isinstance(w, (int, float))
+        )
+        assert float_share < 1.0, "isolated token weights must leave mass for content"
 
         self._ensure_nnsight_model()
         assert self._nnsight_model is not None and self._num_layers is not None
@@ -661,6 +838,17 @@ class FairSentenceTransformer(SentenceTransformer):
                 input_ids = input_ids.to(use_device)
                 attention_mask = attention_mask.to(use_device)
 
+            # Built once per batch, outside the trace: the padding validation
+            # and the basket geometry do not change between layers.
+            calib_plan = self._build_calib_plan(
+                attention_mask,
+                basket_size=calib_basket_size,
+                isolate_bos=resolved_bos,
+                isolate_eos=resolved_eos,
+                bos_weight=bos_weight,
+                eos_weight=eos_weight,
+            )
+
             with torch.no_grad():
                 with self._nnsight_model.trace() as tracer:
                     with tracer.invoke(
@@ -669,17 +857,9 @@ class FairSentenceTransformer(SentenceTransformer):
                         layer_start = max(0, self._num_layers - calib_layers)
                         for idx in range(layer_start, self._num_layers):
                             attn = self._resolve_attention_softmax(idx)
-                            calibrated = self._calibrate_attention(
-                                attn,
-                                attention_mask,
-                                basket_size=calib_basket_size,
-                                strength=calib_strength,
-                                isolate_bos=resolved_bos,
-                                isolate_eos=resolved_eos,
-                                bos_weight=bos_weight,
-                                eos_weight=eos_weight,
+                            self._calibrate_attention_inplace(
+                                attn, calib_plan, strength=calib_strength
                             )
-                            attn.copy_(calibrated)
                         model_output = self._nnsight_model.output.save()
 
             hidden = self._extract_last_hidden_state(model_output)
